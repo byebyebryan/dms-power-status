@@ -26,6 +26,20 @@ PluginComponent {
         return eta === "Unknown" ? "" : eta;
     }
     readonly property string percentText: hasBattery ? `${batteryPercent}%` : ""
+    readonly property string statusText: {
+        const parts = [];
+        if (wattsText.length > 0) {
+            parts.push(wattsText);
+        }
+        if (etaText.length > 0) {
+            parts.push(etaText);
+        }
+        if (percentText.length > 0) {
+            parts.push(percentText);
+        }
+        return parts.join(" ");
+    }
+    readonly property string statusBaseline: showDynamicStatus ? "88.8W 9h 59m 100%" : "100%"
     readonly property color statusColor: {
         if (!hasBattery) {
             return Theme.widgetIconColor;
@@ -59,7 +73,25 @@ PluginComponent {
             popoutService.batteryPopoutLoader.active = true;
         }
         Qt.callLater(() => {
-            popoutService?.toggleBattery(x, y, width, section, screen);
+            const popout = popoutService?.batteryPopoutLoader?.item ?? popoutService?.batteryPopout;
+            if (!popout) {
+                return;
+            }
+
+            const currentScreen = parentScreen || screen || Screen;
+            const effectiveBarConfig = barConfig;
+            const barPosition = axis?.edge === "left" ? 2 : (axis?.edge === "right" ? 3 : (axis?.edge === "top" ? 0 : 1));
+            const triggerWidth = root.width > 0 ? root.width : width;
+
+            if (popout.setBarContext) {
+                popout.setBarContext(barPosition, effectiveBarConfig?.bottomGap ?? 0);
+            }
+            if (popout.setTriggerPosition) {
+                const globalPos = root.mapToItem(null, 0, 0);
+                const pos = SettingsData.getPopupTriggerPosition(globalPos, currentScreen, barThickness, triggerWidth, barSpacing, barPosition, effectiveBarConfig);
+                popout.setTriggerPosition(pos.x, pos.y, pos.width, section, currentScreen, barPosition, barThickness, barSpacing, effectiveBarConfig);
+            }
+            PopoutManager.requestPopout(popout, undefined, "battery");
         });
     }
 
@@ -71,131 +103,50 @@ PluginComponent {
 
             spacing: Theme.spacingXS
 
-            Item {
-                id: wattsBox
-
-                readonly property real boxWidth: visible ? Math.max(wattsBaseline.width, wattsCurrent.width) : 0
-
-                visible: root.wattsText.length > 0
-                width: boxWidth
-                height: wattsLabel.implicitHeight
-                implicitWidth: boxWidth
-                implicitHeight: wattsLabel.implicitHeight
-                anchors.verticalCenter: parent.verticalCenter
-
-                StyledTextMetrics {
-                    id: wattsBaseline
-
-                    text: "88.8W"
-                    font.pixelSize: root.textSize
-                }
-
-                StyledTextMetrics {
-                    id: wattsCurrent
-
-                    text: root.wattsText
-                    font.pixelSize: root.textSize
-                }
-
-                StyledText {
-                    id: wattsLabel
-
-                    anchors.fill: parent
-                    text: root.wattsText
-                    font.pixelSize: root.textSize
-                    color: Theme.widgetTextColor
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    wrapMode: Text.NoWrap
-                    elide: Text.ElideNone
-                }
-            }
-
-            Item {
-                id: etaBox
-
-                visible: root.etaText.length > 0
-                readonly property real boxWidth: visible ? Math.max(etaBaseline.width, etaCurrent.width) : 0
-
-                width: boxWidth
-                height: etaLabel.implicitHeight
-                implicitWidth: boxWidth
-                implicitHeight: etaLabel.implicitHeight
-                anchors.verticalCenter: parent.verticalCenter
-
-                StyledTextMetrics {
-                    id: etaBaseline
-
-                    text: "9h 59m"
-                    font.pixelSize: root.textSize
-                }
-
-                StyledTextMetrics {
-                    id: etaCurrent
-
-                    text: root.etaText
-                    font.pixelSize: root.textSize
-                }
-
-                StyledText {
-                    id: etaLabel
-
-                    anchors.fill: parent
-                    text: root.etaText
-                    font.pixelSize: root.textSize
-                    color: Theme.surfaceVariantText
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    wrapMode: Text.NoWrap
-                    elide: Text.ElideNone
-                }
-            }
-
-            Item {
-                id: percentBox
-
-                visible: root.percentText.length > 0
-                readonly property real boxWidth: visible ? Math.max(percentBaseline.width, percentCurrent.width) : 0
-
-                width: boxWidth
-                height: percentLabel.implicitHeight
-                implicitWidth: boxWidth
-                implicitHeight: percentLabel.implicitHeight
-                anchors.verticalCenter: parent.verticalCenter
-
-                StyledTextMetrics {
-                    id: percentBaseline
-
-                    text: "100%"
-                    font.pixelSize: root.textSize
-                }
-
-                StyledTextMetrics {
-                    id: percentCurrent
-
-                    text: root.percentText
-                    font.pixelSize: root.textSize
-                }
-
-                StyledText {
-                    id: percentLabel
-
-                    anchors.fill: parent
-                    text: root.percentText
-                    font.pixelSize: root.textSize
-                    color: Theme.widgetTextColor
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    wrapMode: Text.NoWrap
-                    elide: Text.ElideNone
-                }
-            }
-
             DankIcon {
                 name: BatteryService.getBatteryIcon()
                 size: root.iconSize
                 color: root.statusColor
                 anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Item {
+                id: textBox
+
+                readonly property real boxWidth: Math.max(statusBaselineMetrics.width, statusCurrent.width)
+
+                width: boxWidth
+                height: statusLabel.implicitHeight
+                implicitWidth: boxWidth
+                implicitHeight: statusLabel.implicitHeight
+                anchors.verticalCenter: parent.verticalCenter
+
+                StyledTextMetrics {
+                    id: statusBaselineMetrics
+
+                    text: root.statusBaseline
+                    font.pixelSize: root.textSize
+                }
+
+                StyledTextMetrics {
+                    id: statusCurrent
+
+                    text: root.statusText
+                    font.pixelSize: root.textSize
+                }
+
+                StyledText {
+                    id: statusLabel
+
+                    anchors.fill: parent
+                    text: root.statusText
+                    font.pixelSize: root.textSize
+                    color: Theme.widgetTextColor
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.NoWrap
+                    elide: Text.ElideNone
+                }
             }
         }
     }
