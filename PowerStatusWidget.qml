@@ -37,9 +37,9 @@ PluginComponent {
         if (etaText.length > 0) {
             parts.push(etaText);
         }
-        return parts.join(" ");
+        return parts.join(" · ");
     }
-    readonly property string statusBaseline: showDynamicStatus ? "100% 88.8W 9h 59m" : "100%"
+    readonly property string statusBaseline: showDynamicStatus ? "100% · 88.8W · 9h 59m" : "100%"
     readonly property color statusColor: {
         if (!hasBattery) {
             return Theme.widgetIconColor;
