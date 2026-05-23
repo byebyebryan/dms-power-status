@@ -26,20 +26,6 @@ PluginComponent {
         return eta === "Unknown" ? "" : eta;
     }
     readonly property string percentText: hasBattery ? `${batteryPercent}%` : ""
-    readonly property string statusText: {
-        const parts = [];
-        if (percentText.length > 0) {
-            parts.push(percentText);
-        }
-        if (wattsText.length > 0) {
-            parts.push(wattsText);
-        }
-        if (etaText.length > 0) {
-            parts.push(etaText);
-        }
-        return parts.join(" · ");
-    }
-    readonly property string statusBaseline: showDynamicStatus ? "100% · 88.8W · 9h 59m" : "100%"
     readonly property color statusColor: {
         if (!hasBattery) {
             return Theme.widgetIconColor;
@@ -113,39 +99,149 @@ PluginComponent {
             Item {
                 id: textBox
 
-                readonly property real boxWidth: Math.max(statusBaselineMetrics.width, statusCurrent.width)
+                readonly property real contentSpacing: Theme.spacingS
+                readonly property real percentWidth: Math.max(percentBaseline.width, percentCurrent.width)
+                readonly property real wattsWidth: Math.max(wattsBaseline.width, wattsCurrent.width)
+                readonly property real etaWidth: Math.max(etaBaseline.width, etaCurrent.width)
+                readonly property real separatorWidth: separatorMetrics.width
+                readonly property real dynamicWidth: percentWidth + wattsWidth + etaWidth + separatorWidth * 2 + contentSpacing * 4
+                readonly property real boxWidth: root.showDynamicStatus ? dynamicWidth : percentWidth
 
                 width: boxWidth
-                height: statusLabel.implicitHeight
+                height: statusRow.implicitHeight
                 implicitWidth: boxWidth
-                implicitHeight: statusLabel.implicitHeight
+                implicitHeight: statusRow.implicitHeight
                 anchors.verticalCenter: parent.verticalCenter
 
                 StyledTextMetrics {
-                    id: statusBaselineMetrics
+                    id: percentBaseline
 
-                    text: root.statusBaseline
+                    text: "100%"
                     font.pixelSize: root.textSize
                 }
 
                 StyledTextMetrics {
-                    id: statusCurrent
+                    id: percentCurrent
 
-                    text: root.statusText
+                    text: root.percentText
                     font.pixelSize: root.textSize
                 }
 
-                StyledText {
-                    id: statusLabel
+                StyledTextMetrics {
+                    id: wattsBaseline
 
-                    anchors.fill: parent
-                    text: root.statusText
+                    text: "88.8W"
                     font.pixelSize: root.textSize
-                    color: Theme.widgetTextColor
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    wrapMode: Text.NoWrap
-                    elide: Text.ElideNone
+                }
+
+                StyledTextMetrics {
+                    id: wattsCurrent
+
+                    text: root.wattsText
+                    font.pixelSize: root.textSize
+                }
+
+                StyledTextMetrics {
+                    id: etaBaseline
+
+                    text: "9h 59m"
+                    font.pixelSize: root.textSize
+                }
+
+                StyledTextMetrics {
+                    id: etaCurrent
+
+                    text: root.etaText
+                    font.pixelSize: root.textSize
+                }
+
+                StyledTextMetrics {
+                    id: separatorMetrics
+
+                    text: "•"
+                    font.pixelSize: root.textSize
+                }
+
+                Row {
+                    id: statusRow
+
+                    anchors.centerIn: parent
+                    spacing: textBox.contentSpacing
+
+                    Item {
+                        width: textBox.percentWidth
+                        height: percentLabel.implicitHeight
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        StyledText {
+                            id: percentLabel
+
+                            anchors.fill: parent
+                            text: root.percentText
+                            font.pixelSize: root.textSize
+                            color: Theme.widgetTextColor
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideNone
+                        }
+                    }
+
+                    StyledText {
+                        visible: root.wattsText.length > 0
+                        text: "•"
+                        font.pixelSize: root.textSize
+                        color: Theme.outlineButton
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Item {
+                        visible: root.wattsText.length > 0
+                        width: visible ? textBox.wattsWidth : 0
+                        height: wattsLabel.implicitHeight
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        StyledText {
+                            id: wattsLabel
+
+                            anchors.fill: parent
+                            text: root.wattsText
+                            font.pixelSize: root.textSize
+                            color: Theme.widgetTextColor
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideNone
+                        }
+                    }
+
+                    StyledText {
+                        visible: root.etaText.length > 0
+                        text: "•"
+                        font.pixelSize: root.textSize
+                        color: Theme.outlineButton
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Item {
+                        visible: root.etaText.length > 0
+                        width: visible ? textBox.etaWidth : 0
+                        height: etaLabel.implicitHeight
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        StyledText {
+                            id: etaLabel
+
+                            anchors.fill: parent
+                            text: root.etaText
+                            font.pixelSize: root.textSize
+                            color: Theme.widgetTextColor
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            wrapMode: Text.NoWrap
+                            elide: Text.ElideNone
+                        }
+                    }
                 }
             }
         }
