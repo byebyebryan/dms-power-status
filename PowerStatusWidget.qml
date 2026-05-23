@@ -28,18 +28,18 @@ PluginComponent {
     readonly property string percentText: hasBattery ? `${batteryPercent}%` : ""
     readonly property string statusText: {
         const parts = [];
+        if (percentText.length > 0) {
+            parts.push(percentText);
+        }
         if (wattsText.length > 0) {
             parts.push(wattsText);
         }
         if (etaText.length > 0) {
             parts.push(etaText);
         }
-        if (percentText.length > 0) {
-            parts.push(percentText);
-        }
         return parts.join(" ");
     }
-    readonly property string statusBaseline: showDynamicStatus ? "88.8W 9h 59m 100%" : "100%"
+    readonly property string statusBaseline: showDynamicStatus ? "100% 88.8W 9h 59m" : "100%"
     readonly property color statusColor: {
         if (!hasBattery) {
             return Theme.widgetIconColor;
