@@ -128,10 +128,13 @@ PluginComponent {
 
         required property var widget
 
-        readonly property real padL: 6
-        readonly property real padR: 12
-        readonly property real padT: 18
-        readonly property real padB: 22
+        readonly property real padL: 8
+        readonly property real padR: 14
+        readonly property real padT: 22
+        readonly property real padB: 26
+        readonly property string labelFont: "10px sans-serif"
+        readonly property real lineWidth: 3
+        readonly property real markerRadius: 4
 
         readonly property color dischargeCol: Theme.primary
         readonly property color chargeCol: Theme.success
@@ -255,7 +258,7 @@ PluginComponent {
                     }
 
                     // stroke in sub-segments so charging spans get their own color
-                    ctx.lineWidth = 2.5
+                    ctx.lineWidth = chart.lineWidth
                     ctx.lineJoin = "round"
                     ctx.lineCap = "round"
                     let i = 1
@@ -294,10 +297,10 @@ PluginComponent {
                 if (now - last.t < chart.widget.gapS) {
                     const mx = Math.min(X(last.t), padL + cw)
                     ctx.beginPath()
-                    ctx.arc(mx, Y(last.v), 3.5, 0, Math.PI * 2)
+                    ctx.arc(mx, Y(last.v), chart.markerRadius, 0, Math.PI * 2)
                     ctx.fillStyle = last.c === 1 ? chart.chargeCol : chart.dischargeCol
                     ctx.fill()
-                    ctx.font = "9px sans-serif"
+                    ctx.font = chart.labelFont
                     ctx.textAlign = mx > padL + cw - 30 ? "right" : "left"
                     ctx.textBaseline = "bottom"
                     ctx.fillStyle = labelColor
@@ -347,33 +350,78 @@ PluginComponent {
                 width: parent.width
                 spacing: Theme.spacingL
 
-                // status header
+                // status header: icon + value pairs
                 Row {
                     width: parent.width
-                    height: 40
-                    spacing: Theme.spacingM
+                    height: 44
+                    spacing: Theme.spacingL
 
-                    DankIcon {
-                        name: BatteryService.getBatteryIcon()
-                        size: Theme.iconSizeLarge
-                        color: root.statusColor
+                    Row {
+                        spacing: 2
                         anchors.verticalCenter: parent.verticalCenter
+
+                        DankIcon {
+                            name: BatteryService.getBatteryIcon()
+                            size: Theme.iconSizeLarge
+                            color: root.statusColor
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        StyledText {
+                            text: root.percentText
+                            font.pixelSize: Theme.fontSizeXLarge
+                            font.weight: Font.Bold
+                            color: root.statusColor
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    Row {
+                        spacing: 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: root.showDynamicStatus
+
+                        DankIcon {
+                            name: "bolt"
+                            size: Theme.iconSizeLarge
+                            color: Theme.surfaceVariantText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        StyledText {
+                            text: root.wattsText
+                            font.pixelSize: Theme.fontSizeLarge
+                            color: Theme.surfaceText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+
+                    Row {
+                        spacing: 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: root.showDynamicStatus
+
+                        DankIcon {
+                            name: "schedule"
+                            size: Theme.iconSizeLarge
+                            color: Theme.surfaceVariantText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        StyledText {
+                            text: root.etaText
+                            font.pixelSize: Theme.fontSizeLarge
+                            color: Theme.surfaceText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
                     }
 
                     StyledText {
-                        text: root.percentText
-                        font.pixelSize: Theme.fontSizeLarge
-                        font.weight: Font.Bold
-                        color: root.statusColor
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    StyledText {
-                        text: root.showDynamicStatus ? `${root.wattsText} · ${root.etaText}` : BatteryService.batteryStatus
+                        text: BatteryService.batteryStatus
                         font.pixelSize: Theme.fontSizeMedium
                         color: Theme.surfaceTextMedium
-                        elide: Text.ElideRight
                         anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.showDynamicStatus
                     }
                 }
 
@@ -382,7 +430,7 @@ PluginComponent {
                     width: parent.width
                     height: graphColumn.implicitHeight + Theme.spacingM * 2
                     radius: Theme.cornerRadius
-                    color: Theme.surfaceLight
+                    color: Theme.nestedSurface
                     border.color: Theme.outlineLight
                     border.width: 1
 
@@ -427,7 +475,7 @@ PluginComponent {
 
                         BatteryChart {
                             width: parent.width
-                            height: 170
+                            height: 220
                             widget: root
                         }
                     }
@@ -436,8 +484,8 @@ PluginComponent {
         }
     }
 
-    popoutWidth: 480
-    popoutHeight: 340
+    popoutWidth: 520
+    popoutHeight: 400
 
     Component {
         id: horizontalPill
@@ -458,11 +506,14 @@ PluginComponent {
                 id: textBox
 
                 readonly property real contentSpacing: Theme.spacingS
+                readonly property real pairSpacing: 1
                 readonly property real subIconSize: Math.round(root.iconSize * 0.72)
                 readonly property real percentWidth: Math.max(percentBaseline.width, percentCurrent.width)
                 readonly property real wattsWidth: Math.max(wattsBaseline.width, wattsCurrent.width)
                 readonly property real etaWidth: Math.max(etaBaseline.width, etaCurrent.width)
-                readonly property real dynamicWidth: percentWidth + wattsWidth + etaWidth + subIconSize * 2 + contentSpacing * 4
+                readonly property real wattsGroupWidth: subIconSize + pairSpacing + wattsWidth
+                readonly property real etaGroupWidth: subIconSize + pairSpacing + etaWidth
+                readonly property real dynamicWidth: percentWidth + wattsGroupWidth + etaGroupWidth + contentSpacing * 2
                 readonly property real boxWidth: root.showDynamicStatus ? dynamicWidth : percentWidth
 
                 width: boxWidth
@@ -538,59 +589,67 @@ PluginComponent {
                         }
                     }
 
-                    DankIcon {
+                    Row {
                         visible: root.wattsText.length > 0
-                        name: "bolt"
-                        size: textBox.subIconSize
-                        color: Theme.surfaceVariantText
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Item {
-                        visible: root.wattsText.length > 0
-                        width: visible ? textBox.wattsWidth : 0
-                        height: wattsLabel.implicitHeight
+                        spacing: textBox.pairSpacing
                         anchors.verticalCenter: parent.verticalCenter
 
-                        StyledText {
-                            id: wattsLabel
+                        DankIcon {
+                            name: "bolt"
+                            size: textBox.subIconSize
+                            color: Theme.surfaceVariantText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
 
-                            anchors.fill: parent
-                            text: root.wattsText
-                            font.pixelSize: root.textSize
-                            color: Theme.widgetTextColor
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            wrapMode: Text.NoWrap
-                            elide: Text.ElideNone
+                        Item {
+                            width: textBox.wattsWidth
+                            height: wattsLabel.implicitHeight
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            StyledText {
+                                id: wattsLabel
+
+                                anchors.fill: parent
+                                text: root.wattsText
+                                font.pixelSize: root.textSize
+                                color: Theme.widgetTextColor
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                wrapMode: Text.NoWrap
+                                elide: Text.ElideNone
+                            }
                         }
                     }
 
-                    DankIcon {
+                    Row {
                         visible: root.etaText.length > 0
-                        name: "schedule"
-                        size: textBox.subIconSize
-                        color: Theme.surfaceVariantText
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Item {
-                        visible: root.etaText.length > 0
-                        width: visible ? textBox.etaWidth : 0
-                        height: etaLabel.implicitHeight
+                        spacing: textBox.pairSpacing
                         anchors.verticalCenter: parent.verticalCenter
 
-                        StyledText {
-                            id: etaLabel
+                        DankIcon {
+                            name: "schedule"
+                            size: textBox.subIconSize
+                            color: Theme.surfaceVariantText
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
 
-                            anchors.fill: parent
-                            text: root.etaText
-                            font.pixelSize: root.textSize
-                            color: Theme.widgetTextColor
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            wrapMode: Text.NoWrap
-                            elide: Text.ElideNone
+                        Item {
+                            width: textBox.etaWidth
+                            height: etaLabel.implicitHeight
+                            anchors.verticalCenter: parent.verticalCenter
+
+                            StyledText {
+                                id: etaLabel
+
+                                anchors.fill: parent
+                                text: root.etaText
+                                font.pixelSize: root.textSize
+                                color: Theme.widgetTextColor
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                wrapMode: Text.NoWrap
+                                elide: Text.ElideNone
+                            }
                         }
                     }
                 }
