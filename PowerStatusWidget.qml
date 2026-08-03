@@ -114,8 +114,6 @@ PluginComponent {
     horizontalBarPill: hasBattery ? horizontalPill : null
     verticalBarPill: hasBattery ? verticalPill : null
 
-    pillClickAction: () => root.triggerPopout()
-
     function formatWatts(watts) {
         if (watts === undefined || watts === null || isNaN(watts) || watts < 0.1) {
             return "";
