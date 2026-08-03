@@ -130,10 +130,12 @@ PluginComponent {
         if (!isNaN(lim) && lim > 0 && lim <= 100)
             _heldLimit = lim;
 
-        // Sample at plug/charging boundaries so the graph flips immediately.
+        // Sample at plug/charging boundaries so the graph flips immediately,
+        // and reset the rate EMA so a transient can't seed it.
         if (_heldCharging !== _prevCharging || _heldPlugged !== _prevPlugged) {
             _prevCharging = _heldCharging;
             _prevPlugged = _heldPlugged;
+            root._resetSmoothedRate();
             root.sample();
         }
         root.updateSmoothedRate();
@@ -228,34 +230,49 @@ echo "AC=$ac"`;
     }
 
     // Time-weighted EMA of the change rate (90s half-life, mirrors DMS) so the
-    // ETA stays stable; only meaningful while actually drawing power.
+    // ETA stays stable. Applies to both charging and discharging. On a plug or
+    // charging-state transition the EMA and seed window reset so a transient
+    // low power read right after unplug can't spike the ETA (e.g. 24h).
     property real _smoothedRate: 0
     property real _lastRateSampleTime: 0
+    property var _rateSeedWindow: []
 
     function _resetSmoothedRate() {
         _smoothedRate = 0;
         _lastRateSampleTime = 0;
+        _rateSeedWindow = [];
     }
 
     function updateSmoothedRate() {
-        if (!_heldHasBattery || !_heldCharging || _heldWatts <= 0) {
+        const w = _heldWatts;
+        if (!_heldHasBattery || w <= 0) {
             _smoothedRate = 0;
             _lastRateSampleTime = 0;
             return;
         }
-        const now = Date.now();
-        if (_smoothedRate <= 0 || _lastRateSampleTime <= 0) {
-            _smoothedRate = _heldWatts;
-            _lastRateSampleTime = now;
+        // Warm-up: collect the first two readings after a transition. Seed the
+        // EMA from the higher of them so a transient dip can't dominate.
+        if (_rateSeedWindow.length < 2) {
+            _rateSeedWindow = _rateSeedWindow.concat([w]);
             return;
         }
+        if (_smoothedRate <= 0 || _lastRateSampleTime <= 0) {
+            _smoothedRate = Math.max(_rateSeedWindow[0], _rateSeedWindow[1]);
+            _lastRateSampleTime = Date.now();
+            return;
+        }
+        const now = Date.now();
         const dt = (now - _lastRateSampleTime) / 1000;
         _lastRateSampleTime = now;
         if (dt <= 0)
             return;
         const tau = 90 / Math.LN2;
         const alpha = 1 - Math.exp(-dt / tau);
-        _smoothedRate += alpha * (_heldWatts - _smoothedRate);
+        _smoothedRate += alpha * (w - _smoothedRate);
+    }
+
+    function rateIsSettled() {
+        return _smoothedRate > 0 && _rateSeedWindow.length >= 2;
     }
 
     onPluginServiceChanged: root.loadSamples()
@@ -314,7 +331,11 @@ echo "AC=$ac"`;
     function formatEta() {
         if (!hasBattery || !showDynamicStatus)
             return "";
-        const rate = _smoothedRate > 0 ? _smoothedRate : powerWatts;
+        // Wait for the rate to settle after a transition so a transient low
+        // reading right after unplug can't show an absurd ETA or blank (>24h).
+        if (!rateIsSettled())
+            return "";
+        const rate = _smoothedRate;
         if (rate <= 0)
             return "";
         const capacity = _heldEnergyFull;
