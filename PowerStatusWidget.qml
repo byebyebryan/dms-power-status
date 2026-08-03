@@ -46,6 +46,17 @@ PluginComponent {
         pluginService.savePluginState(pluginId, "samples", samples);
     }
 
+    function sampleState() {
+        // Mirrors DMS batteryStatus: charging requires an actual power draw.
+        // A plugged-in battery at its charge limit has changeRate <= 0 and is
+        // idle, not charging.
+        if (BatteryService.isCharging && BatteryService.changeRate > 0)
+            return 1;
+        if (!BatteryService.isPluggedIn)
+            return 0;
+        return 2;
+    }
+
     function sample() {
         if (!BatteryService.batteryAvailable)
             return;
@@ -56,7 +67,7 @@ PluginComponent {
         samples = samples.concat([{
             "t": t,
             "v": batteryPercent,
-            "c": (BatteryService.isCharging || BatteryService.isPluggedIn) ? 1 : 0
+            "c": sampleState()
         }]);
         saveSamples();
     }
@@ -138,6 +149,7 @@ PluginComponent {
 
         readonly property color dischargeCol: Theme.primary
         readonly property color chargeCol: Theme.success
+        readonly property color idleCol: Theme.surfaceVariantText
 
         Canvas {
             id: canvas
@@ -257,21 +269,21 @@ PluginComponent {
                         ctx.fill()
                     }
 
-                    // stroke in sub-segments so charging spans get their own color
+                    // stroke in sub-segments so each state gets its own color
                     ctx.lineWidth = chart.lineWidth
                     ctx.lineJoin = "round"
                     ctx.lineCap = "round"
                     let i = 1
                     while (i < rp.length) {
-                        const charging = rp[i].c === 1
+                        const state = rp[i].c
                         let seg = [rp[i - 1]]
-                        while (i < rp.length && (rp[i].c === 1) === charging) {
+                        while (i < rp.length && rp[i].c === state) {
                             seg.push(rp[i])
                             i++
                         }
                         ctx.beginPath()
                         tracePath(seg)
-                        ctx.strokeStyle = charging ? chart.chargeCol : chart.dischargeCol
+                        ctx.strokeStyle = state === 1 ? chart.chargeCol : (state === 0 ? chart.dischargeCol : chart.idleCol)
                         ctx.stroke()
                     }
                 }
@@ -298,7 +310,7 @@ PluginComponent {
                     const mx = Math.min(X(last.t), padL + cw)
                     ctx.beginPath()
                     ctx.arc(mx, Y(last.v), chart.markerRadius, 0, Math.PI * 2)
-                    ctx.fillStyle = last.c === 1 ? chart.chargeCol : chart.dischargeCol
+                    ctx.fillStyle = last.c === 1 ? chart.chargeCol : (last.c === 0 ? chart.dischargeCol : chart.idleCol)
                     ctx.fill()
                     ctx.font = chart.labelFont
                     ctx.textAlign = mx > padL + cw - 30 ? "right" : "left"
@@ -448,21 +460,45 @@ PluginComponent {
 
                             Repeater {
                                 model: [
-                                    { "label": "Charging", "color": Theme.success },
-                                    { "label": "Discharging", "color": Theme.primary },
-                                    { "label": "Suspend", "color": Theme.surfaceVariantText }
+                                    { "label": "Charging", "color": Theme.success, "dashed": false },
+                                    { "label": "Discharging", "color": Theme.primary, "dashed": false },
+                                    { "label": "Plugged", "color": Theme.surfaceVariantText, "dashed": false },
+                                    { "label": "Suspend", "color": Theme.surfaceVariantText, "dashed": true }
                                 ]
 
                                 delegate: Row {
                                     spacing: Theme.spacingXS
                                     anchors.verticalCenter: parent.verticalCenter
 
-                                    Rectangle {
+                                    Item {
                                         width: 14
                                         height: 4
-                                        radius: 2
-                                        color: modelData.color
                                         anchors.verticalCenter: parent.verticalCenter
+
+                                        Rectangle {
+                                            width: parent.width
+                                            height: 4
+                                            radius: 2
+                                            color: modelData.dashed ? "transparent" : modelData.color
+                                        }
+
+                                        Canvas {
+                                            anchors.fill: parent
+                                            visible: modelData.dashed
+
+                                            onPaint: {
+                                                const ctx = getContext("2d")
+                                                ctx.reset()
+                                                ctx.clearRect(0, 0, width, height)
+                                                ctx.setLineDash([3, 3])
+                                                ctx.strokeStyle = modelData.color
+                                                ctx.lineWidth = 2
+                                                ctx.beginPath()
+                                                ctx.moveTo(1, height / 2)
+                                                ctx.lineTo(width - 1, height / 2)
+                                                ctx.stroke()
+                                            }
+                                        }
                                     }
 
                                     StyledText {
