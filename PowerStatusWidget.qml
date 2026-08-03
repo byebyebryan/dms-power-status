@@ -805,12 +805,15 @@ echo "AC=$ac"`;
 
                 readonly property real contentSpacing: Theme.spacingS
                 readonly property real pairSpacing: 1
+                // hourglass ink is wider than bolt's, so give the eta pair a
+                // touch more room for optically consistent spacing.
+                readonly property real etaPairSpacing: 3
                 readonly property real subIconSize: Math.round(root.iconSize * 0.72)
                 readonly property real percentWidth: Math.max(percentBaseline.width, percentCurrent.width)
                 readonly property real wattsWidth: Math.max(wattsBaseline.width, wattsCurrent.width)
                 readonly property real etaWidth: Math.max(etaBaseline.width, etaCurrent.width)
                 readonly property real wattsGroupWidth: subIconSize + pairSpacing + wattsWidth
-                readonly property real etaGroupWidth: subIconSize + pairSpacing + etaWidth
+                readonly property real etaGroupWidth: subIconSize + etaPairSpacing + etaWidth
                 readonly property real dynamicWidth: percentWidth + wattsGroupWidth + etaGroupWidth + contentSpacing * 2
                 readonly property real boxWidth: root.showDynamicStatus ? dynamicWidth : percentWidth
 
@@ -921,7 +924,7 @@ echo "AC=$ac"`;
 
                     Row {
                         visible: root.etaText.length > 0
-                        spacing: textBox.pairSpacing
+                        spacing: textBox.etaPairSpacing
                         anchors.verticalCenter: parent.verticalCenter
 
                         DankIcon {
