@@ -81,8 +81,46 @@ PluginComponent {
 
     Connections {
         target: BatteryService
-        function onIsChargingChanged() { root.sample() }
-        function onIsPluggedInChanged() { root.sample() }
+        function onIsChargingChanged() {
+            root._resetSmoothedRate();
+            root.sample();
+        }
+        function onIsPluggedInChanged() {
+            root._resetSmoothedRate();
+            root.sample();
+        }
+        function onChangeRateChanged() { root.updateSmoothedRate() }
+    }
+
+    // Time-weighted EMA of the change rate (90s half-life, mirrors DMS) so the
+    // ETA stays stable; only meaningful while actually drawing power.
+    property real _smoothedRate: 0
+    property real _lastRateSampleTime: 0
+
+    function _resetSmoothedRate() {
+        _smoothedRate = 0;
+        _lastRateSampleTime = 0;
+    }
+
+    function updateSmoothedRate() {
+        if (!BatteryService.batteryAvailable || BatteryService.changeRate <= 0) {
+            _smoothedRate = 0;
+            _lastRateSampleTime = 0;
+            return;
+        }
+        const now = Date.now();
+        if (_smoothedRate <= 0 || _lastRateSampleTime <= 0) {
+            _smoothedRate = BatteryService.changeRate;
+            _lastRateSampleTime = now;
+            return;
+        }
+        const dt = (now - _lastRateSampleTime) / 1000;
+        _lastRateSampleTime = now;
+        if (dt <= 0)
+            return;
+        const tau = 90 / Math.LN2;
+        const alpha = 1 - Math.exp(-dt / tau);
+        _smoothedRate += alpha * (BatteryService.changeRate - _smoothedRate);
     }
 
     onPluginServiceChanged: root.loadSamples()
@@ -104,8 +142,7 @@ PluginComponent {
         if (!showDynamicStatus) {
             return "";
         }
-        const eta = BatteryService.formatTimeRemaining();
-        return eta === "Unknown" ? "" : eta;
+        return formatEta();
     }
     readonly property string percentText: hasBattery ? `${batteryPercent}%` : ""
     readonly property color statusColor: {
@@ -130,6 +167,38 @@ PluginComponent {
             return "";
         }
         return watts < 10 ? `${watts.toFixed(1)}W` : `${watts.toFixed(0)}W`;
+    }
+
+    // Charge-limit-aware ETA. DMS's formatTimeRemaining() ignores the charge
+    // limit and always targets full capacity, so while charging toward a limit
+    // (e.g. 80%) it overstates time-to-full. We compute it ourselves: the
+    // charge target is min(chargeLimit, 100)% of full capacity.
+    function formatEta() {
+        if (!hasBattery || !showDynamicStatus)
+            return "";
+        const rate = _smoothedRate > 0 ? _smoothedRate : (BatteryService.changeRate || 0);
+        if (rate <= 0)
+            return "";
+        const capacity = BatteryService.batteryCapacity;
+        const energy = BatteryService.batteryEnergy;
+        if (capacity <= 0 || energy <= 0)
+            return "";
+        let seconds;
+        if (BatteryService.isCharging) {
+            const limit = SettingsData.batteryChargeLimit > 0 ? Math.min(100, SettingsData.batteryChargeLimit) : 100;
+            const targetEnergy = capacity * limit / 100;
+            const remaining = targetEnergy - energy;
+            if (remaining <= 0)
+                return "";
+            seconds = remaining / rate * 3600;
+        } else {
+            seconds = energy / rate * 3600;
+        }
+        if (!seconds || seconds <= 0 || seconds > 86400)
+            return "";
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
     }
 
     // ── Chart ──
