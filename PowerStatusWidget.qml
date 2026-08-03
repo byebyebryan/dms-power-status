@@ -11,8 +11,6 @@ PluginComponent {
     layerNamespacePlugin: "power-status"
     visible: hasBattery
 
-    property var popoutService: null
-
     // ── Direct sysfs data source (mirrors the zsh battery prompt) ──
     // We read the battery straight from /sys/class/power_supply instead of
     // going through DMS's BatteryService. Reasons:
@@ -98,9 +96,9 @@ PluginComponent {
         const st = kv["STATUS"];
         if (st === "Charging")
             _heldCharging = true;
-        else if (st === "Discharging")
+        else if (st === "Discharging" || st === "Not charging" || st === "Full")
             _heldCharging = false;
-        // st empty/Unknown/PendingCharge/Not charging -> keep last-good
+        // st empty/Unknown/PendingCharge -> keep last-good
 
         const ac = kv["AC"];
         if (ac === "1")
@@ -190,7 +188,10 @@ echo "AC=$ac"`;
 
     Timer {
         id: refreshTimer
-        interval: 5000
+        // Poll fast while a battery is present; fall back to a slow probe so a
+        // hotplugged battery is still detected without burning a sh every 5s on
+        // battery-less desktops.
+        interval: _heldHasBattery ? 5000 : 60000
         repeat: true
         running: true
         onTriggered: root.refresh()
@@ -446,7 +447,7 @@ echo "AC=$ac"`;
                 const labelColor = Theme.withAlpha(Theme.surfaceVariantText, 0.8)
                 ctx.lineWidth = 1
                 ctx.strokeStyle = gridColor
-                ctx.font = "9px sans-serif"
+                ctx.font = chart.labelFont
                 ctx.fillStyle = labelColor
                 ctx.textAlign = "left"
                 ctx.textBaseline = "bottom"

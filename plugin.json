@@ -1,8 +1,8 @@
 {
     "id": "powerStatus",
     "name": "Power Status",
-    "description": "Compact adaptive battery and power usage status for DankMaterialShell",
-    "version": "0.1.0",
+    "description": "Compact adaptive battery and power usage status with charge history for DankMaterialShell",
+    "version": "0.2.0",
     "author": "Bryan Bai",
     "type": "widget",
     "capabilities": ["dankbar-widget"],

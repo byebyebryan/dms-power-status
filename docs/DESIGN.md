@@ -1,7 +1,7 @@
 # Design: Charge history graph for DMS Power Status
 
-Status: implemented as a working sketch (see `PowerStatusWidget.qml`); not yet
-validated live in DMS.
+Status: implemented and validated live on laptop (carbon) and desktop
+(battery-less) machines.
 
 ## Context
 
@@ -10,128 +10,100 @@ percentage, live charge/discharge wattage, and estimated time remaining in a
 single compact pill. The core premise — wattage + time-to-empty/full at a
 glance — is not fulfilled by any other plugin.
 
-Its current shortcoming: it only renders the pill, and on click it opens the
-built-in DMS battery popout. There is no panel of our own.
+Originally it only rendered the pill and opened the built-in DMS battery popout
+on click. It now ships its own popout with a 12h charge history chart.
 
-`dms-battery-plus` (arcatva) solves the panel side: a phone-style charge
-history chart (12/24h), stat tiles, and a power-profile switcher. Its bar pill
-is strictly worse than ours (it only mirrors the built-in icon + percent). So
-the plugins are complementary, not competing.
+`dms-battery-plus` (arcatva) has a similar panel with a chart, stat tiles, and
+a power-profile switcher. We deliberately kept our scope smaller (see Goals).
 
 ## Goals
 
-- Keep the existing pill (percentage · watts · eta) as-is. This is the
-  differentiator.
+- Keep the pill (percentage · watts · eta) as the differentiator.
 - Add a charge history chart as the popout content (replacing the reuse of the
   built-in battery popout).
-- Stay minimal. A quick-glance widget. We are not chasing everything
-  dms-battery-plus shows. Specifically NOT in scope: health/capacity/energy
-  stat tiles, power-profile switcher, voltage, avg-drain/runtime stat tiles,
-  "since unplug" summary. The graph by itself is the improvement.
+- Stay minimal. NOT in scope: health/capacity/energy stat tiles, power-profile
+  switcher, voltage, avg-drain/runtime tiles, "since unplug" summary.
 
-## Data path
+## Data source: direct sysfs (not DMS BatteryService)
 
-Today the plugin does zero data gathering of its own. It reads DMS's
-`BatteryService` singleton (`/usr/share/quickshell/dms/Services/BatteryService.qml`),
-a thin wrapper over Quickshell's `Quickshell.Services.UPower` (system D-Bus to
-`org.freedesktop.UPower`).
+The widget reads the battery straight from `/sys/class/power_supply/*` via a
+single `sh -c` (mirroring the zsh battery prompt in dotfiles), instead of going
+through DMS's `BatteryService`. Why:
 
-Values available from `BatteryService`:
+- **Charge limit.** The real limit lives in firmware/sysfs
+  (`charge_control_end_threshold`, or `charge_control_limit` /
+  `charge_stop_threshold` fallbacks). DMS's `SettingsData.batteryChargeLimit`
+  is a write-only setting that defaults to 100 and never reconciles to
+  hardware — on carbon the hardware was 80 while DMS said 100.
+- **One source of truth** for level, rate, AC state, and limit, so the pill,
+  panel, and graph can't disagree.
 
-- `batteryLevel` — aggregated int %, rounded
-- `isCharging` / `isPluggedIn` / `isLowBattery` / `isCriticalBattery`
-- `changeRate` — live W
-- `formatTimeRemaining()` — smoothed ETA string ("Xh Ym" or "Unknown")
-- `batteryHealth`, `batteryEnergy`, `batteryCapacity` (Wh), `batteryStatus`,
-  `getBatteryIcon()`
+Fields read in one `sh -c` (µW/µWh converted to W/Wh):
 
-Confirmed the underlying `UPowerDevice` (local qmltypes) exposes `changeRate`,
-`energy`, `energyCapacity`, `timeToEmpty/Full`, `percentage`,
-`healthPercentage`, `state`, `nativePath`, etc. — but **no voltage**. DMS's
-`batteryLevel` is derived from energy/capacity, so it also carries the
-already-smoothed state.
+- `capacity` → level
+- `status` → charging state (`Charging` / `Discharging` / `Not charging` /
+  `Full`)
+- `power_now`, with `current_now × voltage_now` fallback → watts
+- `energy_now` / `energy_full` → Wh for ETA math
+- any supply's `online` → AC / plugged-in
+- `charge_control_end_threshold` → charge limit
 
-### Graph data
+### Transient handling
 
-All the chart needs is `{time, level, charging}`:
+Values are **held last-good**: a transient empty/0 read on plug/unplug keeps
+the previous valid value, so the pill never blanks. Battery presence uses a
+`type=Battery` scan with a 3-streak debounce before hiding on a battery-less
+desktop. The refresh timer polls every 5s while a battery is present, and falls
+back to a 60s probe on desktops (so a hotplugged battery is still detected).
 
-- `level` — `BatteryService.batteryLevel`
-- `charging` — derived from `BatteryService.isCharging` / `isPluggedIn`
-- `time` — epoch seconds at sample time
+## ETA
 
-No shell-outs, no `/sys`, no new runtime deps.
+Computed ourselves (DMS's `formatTimeRemaining()` ignores the charge limit and
+always targets 100%):
+
+- Charging: target = `min(limit, 100)%` of `energy_full`; time to that target
+  at the smoothed rate.
+- Discharging: `energy_now / rate`.
+- Rate is a 30s-half-life EMA (reset + 2-read warm-up on plug/charging
+  transitions so a transient low read right after unplug can't spike the ETA).
+- Rendered as `h:mm`.
 
 ## Retention
 
-DMS ships the file cache we need: `PluginService.savePluginState(pluginId, key, value)`
-/ `loadPluginState(pluginId, key, default)` (see `PluginService.qml`). Persists
-to a per-plugin JSON file at `~/.local/state/DankMaterialShell/plugins/<pluginId>_state.json`,
-with atomic writes and a 150 ms debounced flush. This is the documented Tier-2
-use case ("history, cache, counters").
+DMS's `PluginService.savePluginState` / `loadPluginState` persist to a
+per-plugin JSON file at
+`~/.local/state/DankMaterialShell/plugins/powerStatus_state.json` (atomic,
+debounced). The sampler lives on the plugin root (a persistent instance, alive
+while DMS runs), so it collects in the background whether or not the popout is
+open.
 
-Design:
-
-- `Timer` on the **plugin root** (not the popout content) samples every 60 s
-  → `{t, level, charging}`. The root is a persistent instance created by the
-  bar's `WidgetHost` and stays alive while DMS runs, so the sampler collects in
-  the background whether or not the popout is open. (The popout content is a
-  separate lazy-loaded tree — `PluginPopout.qml` — that only exists when open.)
-- Also sample immediately on `isCharging` / `isPluggedIn` change so the
-  charge/discharge segment boundary is exact instead of up-to-60 s off.
-- Append unconditionally (no dedupe) — consecutive identical values are real
-  flat-line data that keep the time axis honest; file size is trivial.
-- Persist via `savePluginState("powerStatus", "samples", samples)`.
-- Load on `Component.onCompleted`, prune samples older than the window.
-
-Window of 12 h at 60 s ≈ 720 entries — trivial size.
-
-**Granularity rationale.** `batteryLevel` is an integer % that moves slowly —
-typical drain is ~5–15 W against a 40–80 Wh pack, so 1% takes ~2–5 min. At 60 s
-we get 2–5 samples per percentage step: smooth line, no aliasing, and at-most
-60 s staleness at the "now" edge. The event-triggered boundary samples are what
-keep transition colors exact.
+- 60s heartbeat sample → `{t, level, state}` plus immediate samples on
+  plug/charging boundaries.
+- 12h window; pruned on load/save. ~720 entries, trivial size.
 
 ### Single instance assumption
 
-We assume one instance of the widget in the bar. Multiple instances are
-technically possible (each bar entry creates its own `WidgetHost` →
-`PluginComponent`), but not a realistic configuration for a battery widget.
-`savePluginState` is per-plugin, whole-value set, so two writers could lose a
-sample on read-modify-write — acceptable, not worth guarding now. A one-line
+One instance in the bar. Multiple instances are technically possible but not
+realistic for a battery widget; `savePluginState` is whole-value per plugin, so
+two writers could lose a sample on read-modify-write — acceptable. A
 `setGlobalVar` sampler-claim is the escape hatch if ever needed.
+
+## Chart
+
+- Canvas line, discharge in `Theme.primary`, charging in `Theme.success`,
+  plugged-idle in `Theme.surfaceVariantText`, suspend gaps as dashed
+  connectors.
+- Legend (Charging / Discharging / Plugged / Suspend) and a marker on the
+  newest sample with its level.
+- 3h time ticks, 0/50/100% grid, theme-reactive repaint.
+- 12h window only (constant). No 12/24h toggle — deliberately skipped.
 
 ## Trade-offs accepted
 
 - **No pre-install history.** Self-sampling only accumulates after the plugin
-  runs. Unlike dms-battery-plus, which backfills from UPower's retained
-  history via `GetHistory` (but at the cost of shelling out to `upower` +
-  `gdbus` every 5 min). We deliberately choose no-backfill + zero deps.
-- **No voltage.** DMS/Quickshell does not expose it; dms-battery-plus reads
-  `/sys/class/power_supply/BAT*/voltage_now`. Out of scope.
-- **No history during suspend.** Samples stop while suspended (no polling
-  wakes the system).
-
-## Popout
-
-- Replace the current click-through to the built-in battery popout with our
-  own `popoutContent` (the chart).
-- Chart: `Canvas` (as dms-battery-plus does), themed, discharge in
-  `Theme.primary`, charging in `Theme.success`, suspend gaps as dashed
-  connectors. Legend (green = charging, primary = discharging, dashed =
-  suspend) and a marker on the newest sample with its level.
-- Reuse the existing `openBatteryPopout`-style positioning logic in the click
-  handler so the popout respects bar edge, spacing, and bottom gap.
-- 12 h window only (constant). No 12/24 h toggle — that settings surface is the
-  kind of thing we're deliberately skipping. 24 h can be added later as a
-  three-line change if wanted.
-
-## Open questions / next steps
-
-- [x] Sampling interval: 60 s heartbeat + event-triggered boundary samples.
-- [x] Span toggle: 12 h only, no toggle.
-- [x] Hover tooltip: skip in v1; legend + newest-sample marker instead. Hover
-      is the obvious v1.1 addition if the chart feels opaque.
-- [x] Sketch the merged widget (existing pill + chart popout) in a working
-      tree.
-- [ ] Validate live in DMS (reload plugin, confirm pill + popout + sampling).
-- [ ] No-battery path verified by inspection only so far.
+  runs; unlike battery-plus we don't backfill from UPower history.
+- **No voltage**, **no stat tiles**, **no power profiles** — out of scope.
+- **No history during suspend** — samples stop while suspended.
+- sysfs rather than UPower D-Bus: matches the zsh prompt, works on machines
+  where the UPower service layer might aggregate differently, and is the only
+  place the charge limit is reliably exposed.
