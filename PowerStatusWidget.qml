@@ -672,7 +672,7 @@ echo "AC=$ac"`;
                     Row {
                         spacing: 2
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: root.showDynamicStatus
+                        visible: root.etaText.length > 0
 
                         DankIcon {
                             name: "hourglass"
