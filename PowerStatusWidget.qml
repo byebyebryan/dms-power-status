@@ -355,9 +355,10 @@ echo "AC=$ac"`;
         }
         if (!seconds || seconds <= 0 || seconds > 86400)
             return "";
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+        const totalMinutes = Math.round(seconds / 60);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        return `${hours}:${minutes.toString().padStart(2, "0")}`;
     }
 
     // Mirrors DMS getBatteryIcon (level + plugged/charging -> Material symbol).
@@ -674,7 +675,7 @@ echo "AC=$ac"`;
                         visible: root.showDynamicStatus
 
                         DankIcon {
-                            name: "schedule"
+                            name: "hourglass"
                             size: Theme.iconSizeLarge
                             color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
@@ -850,7 +851,7 @@ echo "AC=$ac"`;
                 StyledTextMetrics {
                     id: etaBaseline
 
-                    text: "9h 59m"
+                    text: "9:59"
                     font.pixelSize: root.textSize
                 }
 
@@ -924,7 +925,7 @@ echo "AC=$ac"`;
                         anchors.verticalCenter: parent.verticalCenter
 
                         DankIcon {
-                            name: "schedule"
+                            name: "hourglass"
                             size: textBox.subIconSize
                             color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
@@ -1000,7 +1001,7 @@ echo "AC=$ac"`;
                 anchors.horizontalCenter: parent.horizontalCenter
 
                 DankIcon {
-                    name: "schedule"
+                    name: "hourglass"
                     size: root.textSize
                     color: Theme.primary
                     anchors.verticalCenter: parent.verticalCenter
