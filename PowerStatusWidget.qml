@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import qs.Common
 import qs.Modules.Plugins
 import qs.Services
@@ -12,13 +13,23 @@ PluginComponent {
 
     property var popoutService: null
 
-    // ── Sampler / retention ──
+    // ── Direct sysfs data source (mirrors the zsh battery prompt) ──
+    // We read the battery straight from /sys/class/power_supply instead of
+    // going through DMS's BatteryService. Reasons:
+    //   - The charge limit lives in firmware/sysfs (charge_control_end_threshold);
+    //     DMS's SettingsData.batteryChargeLimit never reconciles to it.
+    //   - One source of truth for level, rate, AC state, and limit.
+    // Values are held (last-good) so a transient empty/0 read on plug/unplug
+    // never blanks the pill — we keep the previous valid value instead.
 
     readonly property string pid: "powerStatus"
     readonly property int windowSeconds: 12 * 3600
     readonly property int gapS: 1200
+    readonly property string _refreshProcId: "powerStatus.refresh." + Math.random().toString(36).slice(2)
 
     property var samples: []
+    property bool _reading: false
+    property int _noBatteryStreak: 0
 
     function loadSamples() {
         if (!pluginService || !pluginId)
@@ -46,19 +57,156 @@ PluginComponent {
         pluginService.savePluginState(pluginId, "samples", samples);
     }
 
+    // held (last-good) state
+    property bool _heldHasBattery: false
+    property int _heldLevel: 0
+    property bool _heldCharging: false
+    property bool _heldPlugged: false
+    property real _heldWatts: 0
+    property real _heldEnergyNow: 0
+    property real _heldEnergyFull: 0
+    property int _heldLimit: 100
+
+    // state-changed flags so we sample at boundaries
+    property bool _prevCharging: false
+    property bool _prevPlugged: false
+
+    function parseOutput(out) {
+        const kv = {};
+        for (const line of (out || "").split("\n")) {
+            const eq = line.indexOf("=");
+            if (eq < 0)
+                continue;
+            kv[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+        }
+
+        const found = kv["FOUND"];
+        if (found === "0" || found === undefined) {
+            _noBatteryStreak++;
+            if (_noBatteryStreak >= 3)
+                _heldHasBattery = false;
+            return;
+        }
+        _noBatteryStreak = 0;
+        _heldHasBattery = true;
+
+        // Only commit a field when this read is valid; otherwise keep last-good.
+        const cap = parseInt(kv["CAP"], 10);
+        if (!isNaN(cap) && cap >= 0)
+            _heldLevel = Math.min(100, Math.max(0, cap));
+
+        const st = kv["STATUS"];
+        if (st === "Charging")
+            _heldCharging = true;
+        else if (st === "Discharging")
+            _heldCharging = false;
+        // st empty/Unknown/PendingCharge/Not charging -> keep last-good
+
+        const ac = kv["AC"];
+        if (ac === "1")
+            _heldPlugged = true;
+        else if (ac === "0")
+            _heldPlugged = false;
+
+        // power_now is µW; fall back to current × voltage like the prompt.
+        let p = parseInt(kv["POWER"], 10);
+        if (isNaN(p) || p < 0) {
+            const c = parseInt(kv["CUR"], 10);
+            const v = parseInt(kv["VOLT"], 10);
+            p = (!isNaN(c) && !isNaN(v)) ? Math.floor(c * v / 1000000) : NaN;
+        }
+        if (!isNaN(p) && p >= 0)
+            _heldWatts = p / 1000000; // W
+
+        // energy_* are µWh.
+        const en = parseInt(kv["ENERGY_NOW"], 10);
+        if (!isNaN(en) && en >= 0)
+            _heldEnergyNow = en / 1000000; // Wh
+        const ef = parseInt(kv["ENERGY_FULL"], 10);
+        if (!isNaN(ef) && ef > 0)
+            _heldEnergyFull = ef / 1000000; // Wh
+
+        const lim = parseInt(kv["LIMIT"], 10);
+        if (!isNaN(lim) && lim > 0 && lim <= 100)
+            _heldLimit = lim;
+
+        // Sample at plug/charging boundaries so the graph flips immediately.
+        if (_heldCharging !== _prevCharging || _heldPlugged !== _prevPlugged) {
+            _prevCharging = _heldCharging;
+            _prevPlugged = _heldPlugged;
+            root.sample();
+        }
+        root.updateSmoothedRate();
+    }
+
+    function refresh() {
+        if (_reading)
+            return;
+        _reading = true;
+        const cmd = `
+ac=0
+found=0
+for s in /sys/class/power_supply/*; do
+  [ -d "$s" ] || continue
+  t=$(cat "$s/type" 2>/dev/null) || continue
+  [ "$t" = "Battery" ] || continue
+  found=1
+  cap=$(cat "$s/capacity" 2>/dev/null)
+  st=$(cat "$s/status" 2>/dev/null)
+  p=$(cat "$s/power_now" 2>/dev/null)
+  c=$(cat "$s/current_now" 2>/dev/null)
+  v=$(cat "$s/voltage_now" 2>/dev/null)
+  en=$(cat "$s/energy_now" 2>/dev/null)
+  ef=$(cat "$s/energy_full" 2>/dev/null)
+  lim=$(cat "$s/charge_control_end_threshold" 2>/dev/null)
+  if [ -z "$lim" ]; then lim=$(cat "$s/charge_control_limit" 2>/dev/null); fi
+  if [ -z "$lim" ]; then lim=$(cat "$s/charge_stop_threshold" 2>/dev/null); fi
+  echo "CAP=$cap"
+  echo "STATUS=$st"
+  echo "POWER=$p"
+  echo "CUR=$c"
+  echo "VOLT=$v"
+  echo "ENERGY_NOW=$en"
+  echo "ENERGY_FULL=$ef"
+  echo "LIMIT=$lim"
+  break
+done
+for s in /sys/class/power_supply/*; do
+  [ -f "$s/online" ] || continue
+  o=$(cat "$s/online" 2>/dev/null)
+  [ "$o" = "1" ] && ac=1 && break
+done
+echo "FOUND=$found"
+echo "AC=$ac"`;
+        Proc.runCommand(_refreshProcId, ["sh", "-c", cmd], (stdout, exit) => {
+            _reading = false;
+            if (root === null)
+                return;
+            root.parseOutput(stdout);
+        }, 500);
+    }
+
+    Timer {
+        id: refreshTimer
+        interval: 5000
+        repeat: true
+        running: true
+        onTriggered: root.refresh()
+    }
+
     function sampleState() {
         // Mirrors DMS batteryStatus: charging requires an actual power draw.
         // A plugged-in battery at its charge limit has changeRate <= 0 and is
         // idle, not charging.
-        if (BatteryService.isCharging && BatteryService.changeRate > 0)
+        if (_heldCharging && _heldWatts > 0)
             return 1;
-        if (!BatteryService.isPluggedIn)
+        if (!_heldPlugged)
             return 0;
         return 2;
     }
 
     function sample() {
-        if (!BatteryService.batteryAvailable)
+        if (!_heldHasBattery)
             return;
         const t = Math.floor(Date.now() / 1000);
         const last = samples.length > 0 ? samples[samples.length - 1] : null;
@@ -66,7 +214,7 @@ PluginComponent {
             return;
         samples = samples.concat([{
             "t": t,
-            "v": batteryPercent,
+            "v": _heldLevel,
             "c": sampleState()
         }]);
         saveSamples();
@@ -75,21 +223,8 @@ PluginComponent {
     Timer {
         interval: 60000
         repeat: true
-        running: BatteryService.batteryAvailable
+        running: _heldHasBattery
         onTriggered: root.sample()
-    }
-
-    Connections {
-        target: BatteryService
-        function onIsChargingChanged() {
-            root._resetSmoothedRate();
-            root.sample();
-        }
-        function onIsPluggedInChanged() {
-            root._resetSmoothedRate();
-            root.sample();
-        }
-        function onChangeRateChanged() { root.updateSmoothedRate() }
     }
 
     // Time-weighted EMA of the change rate (90s half-life, mirrors DMS) so the
@@ -103,14 +238,14 @@ PluginComponent {
     }
 
     function updateSmoothedRate() {
-        if (!BatteryService.batteryAvailable || BatteryService.changeRate <= 0) {
+        if (!_heldHasBattery || !_heldCharging || _heldWatts <= 0) {
             _smoothedRate = 0;
             _lastRateSampleTime = 0;
             return;
         }
         const now = Date.now();
         if (_smoothedRate <= 0 || _lastRateSampleTime <= 0) {
-            _smoothedRate = BatteryService.changeRate;
+            _smoothedRate = _heldWatts;
             _lastRateSampleTime = now;
             return;
         }
@@ -120,23 +255,26 @@ PluginComponent {
             return;
         const tau = 90 / Math.LN2;
         const alpha = 1 - Math.exp(-dt / tau);
-        _smoothedRate += alpha * (BatteryService.changeRate - _smoothedRate);
+        _smoothedRate += alpha * (_heldWatts - _smoothedRate);
     }
 
     onPluginServiceChanged: root.loadSamples()
     onPluginIdChanged: root.loadSamples()
     Component.onCompleted: {
         root.loadSamples();
+        root.refresh();
         root.sample();
     }
 
-    // ── Derived state (unchanged from existing pill) ──
+    // ── Derived state ──
 
-    readonly property bool hasBattery: BatteryService.batteryAvailable
-    readonly property int batteryPercent: Math.max(0, Math.min(100, Math.round(BatteryService.batteryLevel)))
-    readonly property real powerWatts: Math.abs(BatteryService.changeRate || 0)
+    readonly property bool hasBattery: _heldHasBattery
+    readonly property int batteryPercent: _heldLevel
+    readonly property bool isCharging: _heldCharging
+    readonly property bool isPluggedIn: _heldPlugged
+    readonly property real powerWatts: _heldWatts
     readonly property bool hasUsefulPower: powerWatts >= 0.1
-    readonly property bool showDynamicStatus: hasBattery && hasUsefulPower && (BatteryService.isCharging || !BatteryService.isPluggedIn)
+    readonly property bool showDynamicStatus: hasBattery && hasUsefulPower && (isCharging || !isPluggedIn)
     readonly property string wattsText: showDynamicStatus ? formatWatts(powerWatts) : ""
     readonly property string etaText: {
         if (!showDynamicStatus) {
@@ -149,10 +287,10 @@ PluginComponent {
         if (!hasBattery) {
             return Theme.widgetIconColor;
         }
-        if (BatteryService.isLowBattery && !BatteryService.isCharging && !BatteryService.isPluggedIn) {
+        if (batteryPercent <= SettingsData.batteryLowThreshold && !isCharging && !isPluggedIn) {
             return Theme.error;
         }
-        if (BatteryService.isCharging || BatteryService.isPluggedIn) {
+        if (isCharging || isPluggedIn) {
             return Theme.primary;
         }
         return Theme.widgetIconColor;
@@ -172,20 +310,20 @@ PluginComponent {
     // Charge-limit-aware ETA. DMS's formatTimeRemaining() ignores the charge
     // limit and always targets full capacity, so while charging toward a limit
     // (e.g. 80%) it overstates time-to-full. We compute it ourselves: the
-    // charge target is min(chargeLimit, 100)% of full capacity.
+    // charge target is min(limit, 100)% of full capacity (from sysfs).
     function formatEta() {
         if (!hasBattery || !showDynamicStatus)
             return "";
-        const rate = _smoothedRate > 0 ? _smoothedRate : (BatteryService.changeRate || 0);
+        const rate = _smoothedRate > 0 ? _smoothedRate : powerWatts;
         if (rate <= 0)
             return "";
-        const capacity = BatteryService.batteryCapacity;
-        const energy = BatteryService.batteryEnergy;
+        const capacity = _heldEnergyFull;
+        const energy = _heldEnergyNow;
         if (capacity <= 0 || energy <= 0)
             return "";
         let seconds;
-        if (BatteryService.isCharging) {
-            const limit = SettingsData.batteryChargeLimit > 0 ? Math.min(100, SettingsData.batteryChargeLimit) : 100;
+        if (isCharging) {
+            const limit = _heldLimit > 0 ? Math.min(100, _heldLimit) : 100;
             const targetEnergy = capacity * limit / 100;
             const remaining = targetEnergy - energy;
             if (remaining <= 0)
@@ -199,6 +337,37 @@ PluginComponent {
         const hours = Math.floor(seconds / 3600);
         const minutes = Math.floor((seconds % 3600) / 60);
         return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    }
+
+    // Mirrors DMS getBatteryIcon (level + plugged/charging -> Material symbol).
+    function powerIconName() {
+        const level = batteryPercent;
+        if (isCharging || isPluggedIn) {
+            if (level >= 90) return "battery_charging_full";
+            if (level >= 80) return "battery_charging_90";
+            if (level >= 60) return "battery_charging_80";
+            if (level >= 50) return "battery_charging_60";
+            if (level >= 30) return "battery_charging_50";
+            if (level >= 20) return "battery_charging_30";
+            return "battery_charging_20";
+        }
+        if (level >= 95) return "battery_full";
+        if (level >= 85) return "battery_6_bar";
+        if (level >= 70) return "battery_5_bar";
+        if (level >= 55) return "battery_4_bar";
+        if (level >= 40) return "battery_3_bar";
+        if (level >= 25) return "battery_2_bar";
+        return "battery_1_bar";
+    }
+
+    function statusText() {
+        if (!hasBattery)
+            return "No battery";
+        if (isCharging)
+            return "Charging";
+        if (isPluggedIn)
+            return "Plugged In";
+        return "Discharging";
     }
 
     // ── Chart ──
@@ -442,7 +611,7 @@ PluginComponent {
                         anchors.verticalCenter: parent.verticalCenter
 
                         DankIcon {
-                            name: BatteryService.getBatteryIcon()
+                            name: root.powerIconName()
                             size: Theme.iconSizeLarge
                             color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
@@ -500,7 +669,7 @@ PluginComponent {
                     }
 
                     StyledText {
-                        text: BatteryService.batteryStatus
+                        text: root.statusText()
                         font.pixelSize: Theme.fontSizeMedium
                         color: Theme.surfaceTextMedium
                         anchors.verticalCenter: parent.verticalCenter
@@ -603,7 +772,7 @@ PluginComponent {
             spacing: Theme.spacingXS
 
             DankIcon {
-                name: BatteryService.getBatteryIcon()
+                name: root.powerIconName()
                 size: root.iconSize
                 color: root.statusColor
                 anchors.verticalCenter: parent.verticalCenter
@@ -771,7 +940,7 @@ PluginComponent {
             spacing: 1
 
             DankIcon {
-                name: BatteryService.getBatteryIcon()
+                name: root.powerIconName()
                 size: root.iconSizeLarge
                 color: root.statusColor
                 anchors.horizontalCenter: parent.horizontalCenter
