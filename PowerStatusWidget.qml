@@ -345,11 +345,13 @@ PluginComponent {
 
             Column {
                 width: parent.width
-                spacing: Theme.spacingS
+                spacing: Theme.spacingL
 
+                // status header
                 Row {
                     width: parent.width
-                    spacing: Theme.spacingS
+                    height: 40
+                    spacing: Theme.spacingM
 
                     DankIcon {
                         name: BatteryService.getBatteryIcon()
@@ -375,50 +377,67 @@ PluginComponent {
                     }
                 }
 
-                // legend
-                Row {
-                    spacing: Theme.spacingM
+                // graph card
+                StyledRect {
+                    width: parent.width
+                    height: graphColumn.implicitHeight + Theme.spacingM * 2
+                    radius: Theme.cornerRadius
+                    color: Theme.surfaceLight
+                    border.color: Theme.outlineLight
+                    border.width: 1
 
-                    Repeater {
-                        model: [
-                            { "label": "Charging", "color": Theme.success },
-                            { "label": "Discharging", "color": Theme.primary },
-                            { "label": "Suspend", "color": Theme.surfaceVariantText }
-                        ]
+                    Column {
+                        id: graphColumn
+                        width: parent.width - Theme.spacingM * 2
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingS
 
-                        delegate: Row {
-                            spacing: Theme.spacingXS
-                            anchors.verticalCenter: parent.verticalCenter
+                        // legend
+                        Row {
+                            spacing: Theme.spacingM
 
-                            Rectangle {
-                                width: 14
-                                height: 4
-                                radius: 2
-                                color: modelData.color
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
+                            Repeater {
+                                model: [
+                                    { "label": "Charging", "color": Theme.success },
+                                    { "label": "Discharging", "color": Theme.primary },
+                                    { "label": "Suspend", "color": Theme.surfaceVariantText }
+                                ]
 
-                            StyledText {
-                                text: modelData.label
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                anchors.verticalCenter: parent.verticalCenter
+                                delegate: Row {
+                                    spacing: Theme.spacingXS
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    Rectangle {
+                                        width: 14
+                                        height: 4
+                                        radius: 2
+                                        color: modelData.color
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+
+                                    StyledText {
+                                        text: modelData.label
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
                             }
                         }
-                    }
-                }
 
-                BatteryChart {
-                    width: parent.width
-                    height: 170
-                    widget: root
+                        BatteryChart {
+                            width: parent.width
+                            height: 170
+                            widget: root
+                        }
+                    }
                 }
             }
         }
     }
 
     popoutWidth: 480
-    popoutHeight: 300
+    popoutHeight: 340
 
     Component {
         id: horizontalPill
@@ -439,11 +458,11 @@ PluginComponent {
                 id: textBox
 
                 readonly property real contentSpacing: Theme.spacingS
+                readonly property real subIconSize: Math.round(root.iconSize * 0.72)
                 readonly property real percentWidth: Math.max(percentBaseline.width, percentCurrent.width)
                 readonly property real wattsWidth: Math.max(wattsBaseline.width, wattsCurrent.width)
                 readonly property real etaWidth: Math.max(etaBaseline.width, etaCurrent.width)
-                readonly property real separatorWidth: separatorMetrics.width
-                readonly property real dynamicWidth: percentWidth + wattsWidth + etaWidth + separatorWidth * 2 + contentSpacing * 4
+                readonly property real dynamicWidth: percentWidth + wattsWidth + etaWidth + subIconSize * 2 + contentSpacing * 4
                 readonly property real boxWidth: root.showDynamicStatus ? dynamicWidth : percentWidth
 
                 width: boxWidth
@@ -494,13 +513,6 @@ PluginComponent {
                     font.pixelSize: root.textSize
                 }
 
-                StyledTextMetrics {
-                    id: separatorMetrics
-
-                    text: "•"
-                    font.pixelSize: root.textSize
-                }
-
                 Row {
                     id: statusRow
 
@@ -526,11 +538,11 @@ PluginComponent {
                         }
                     }
 
-                    StyledText {
+                    DankIcon {
                         visible: root.wattsText.length > 0
-                        text: "•"
-                        font.pixelSize: root.textSize
-                        color: Theme.outlineButton
+                        name: "bolt"
+                        size: textBox.subIconSize
+                        color: Theme.surfaceVariantText
                         anchors.verticalCenter: parent.verticalCenter
                     }
 
@@ -554,11 +566,11 @@ PluginComponent {
                         }
                     }
 
-                    StyledText {
+                    DankIcon {
                         visible: root.etaText.length > 0
-                        text: "•"
-                        font.pixelSize: root.textSize
-                        color: Theme.outlineButton
+                        name: "schedule"
+                        size: textBox.subIconSize
+                        color: Theme.surfaceVariantText
                         anchors.verticalCenter: parent.verticalCenter
                     }
 
@@ -606,12 +618,44 @@ PluginComponent {
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
-            StyledText {
+            Row {
+                spacing: 2
                 visible: root.wattsText.length > 0
-                text: root.wattsText
-                font.pixelSize: root.textSize
-                color: Theme.surfaceVariantText
                 anchors.horizontalCenter: parent.horizontalCenter
+
+                DankIcon {
+                    name: "bolt"
+                    size: root.textSize
+                    color: Theme.surfaceVariantText
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                StyledText {
+                    text: root.wattsText
+                    font.pixelSize: root.textSize
+                    color: Theme.surfaceVariantText
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            Row {
+                spacing: 2
+                visible: root.etaText.length > 0
+                anchors.horizontalCenter: parent.horizontalCenter
+
+                DankIcon {
+                    name: "schedule"
+                    size: root.textSize
+                    color: Theme.surfaceVariantText
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                StyledText {
+                    text: root.etaText
+                    font.pixelSize: root.textSize
+                    color: Theme.surfaceVariantText
+                    anchors.verticalCenter: parent.verticalCenter
+                }
             }
         }
     }
