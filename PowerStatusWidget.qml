@@ -369,7 +369,7 @@ PluginComponent {
 
                         StyledText {
                             text: root.percentText
-                            font.pixelSize: Theme.fontSizeXLarge
+                            font.pixelSize: Theme.fontSizeLarge
                             font.weight: Font.Bold
                             color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
@@ -391,6 +391,7 @@ PluginComponent {
                         StyledText {
                             text: root.wattsText
                             font.pixelSize: Theme.fontSizeLarge
+                            font.weight: Font.Bold
                             color: Theme.surfaceText
                             anchors.verticalCenter: parent.verticalCenter
                         }
@@ -411,6 +412,7 @@ PluginComponent {
                         StyledText {
                             text: root.etaText
                             font.pixelSize: Theme.fontSizeLarge
+                            font.weight: Font.Bold
                             color: Theme.surfaceText
                             anchors.verticalCenter: parent.verticalCenter
                         }
