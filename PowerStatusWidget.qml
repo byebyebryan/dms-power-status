@@ -229,10 +229,10 @@ echo "AC=$ac"`;
         onTriggered: root.sample()
     }
 
-    // Time-weighted EMA of the change rate (90s half-life, mirrors DMS) so the
-    // ETA stays stable. Applies to both charging and discharging. On a plug or
-    // charging-state transition the EMA and seed window reset so a transient
-    // low power read right after unplug can't spike the ETA (e.g. 24h).
+    // Time-weighted EMA of the change rate (30s half-life) so the ETA stays
+    // stable but converges quickly after plug/unplug. Applies to both charging
+    // and discharging. On a plug or charging-state transition the EMA and seed
+    // window reset so a transient low power read can't spike the ETA.
     property real _smoothedRate: 0
     property real _lastRateSampleTime: 0
     property var _rateSeedWindow: []
@@ -266,7 +266,7 @@ echo "AC=$ac"`;
         _lastRateSampleTime = now;
         if (dt <= 0)
             return;
-        const tau = 90 / Math.LN2;
+        const tau = 30 / Math.LN2;
         const alpha = 1 - Math.exp(-dt / tau);
         _smoothedRate += alpha * (w - _smoothedRate);
     }
@@ -814,8 +814,11 @@ echo "AC=$ac"`;
                 readonly property real etaWidth: Math.max(etaBaseline.width, etaCurrent.width)
                 readonly property real wattsGroupWidth: subIconSize + pairSpacing + wattsWidth
                 readonly property real etaGroupWidth: subIconSize + etaPairSpacing + etaWidth
-                readonly property real dynamicWidth: percentWidth + wattsGroupWidth + etaGroupWidth + contentSpacing * 2
-                readonly property real boxWidth: root.showDynamicStatus ? dynamicWidth : percentWidth
+                // Size to what is actually visible so the pill resizes when the
+                // ETA is missing (e.g. while the rate settles after plug/unplug).
+                readonly property real boxWidth: percentWidth
+                    + (root.wattsText.length > 0 ? wattsGroupWidth + contentSpacing : 0)
+                    + (root.etaText.length > 0 ? etaGroupWidth + contentSpacing : 0)
 
                 width: boxWidth
                 height: statusRow.implicitHeight
