@@ -655,7 +655,7 @@ echo "AC=$ac"`;
                         DankIcon {
                             name: "bolt"
                             size: Theme.iconSizeLarge
-                            color: Theme.surfaceVariantText
+                            color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -676,7 +676,7 @@ echo "AC=$ac"`;
                         DankIcon {
                             name: "schedule"
                             size: Theme.iconSizeLarge
-                            color: Theme.surfaceVariantText
+                            color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -894,7 +894,7 @@ echo "AC=$ac"`;
                         DankIcon {
                             name: "bolt"
                             size: textBox.subIconSize
-                            color: Theme.surfaceVariantText
+                            color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -926,7 +926,7 @@ echo "AC=$ac"`;
                         DankIcon {
                             name: "schedule"
                             size: textBox.subIconSize
-                            color: Theme.surfaceVariantText
+                            color: Theme.primary
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -982,7 +982,7 @@ echo "AC=$ac"`;
                 DankIcon {
                     name: "bolt"
                     size: root.textSize
-                    color: Theme.surfaceVariantText
+                    color: Theme.primary
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
@@ -1002,7 +1002,7 @@ echo "AC=$ac"`;
                 DankIcon {
                     name: "schedule"
                     size: root.textSize
-                    color: Theme.surfaceVariantText
+                    color: Theme.primary
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
