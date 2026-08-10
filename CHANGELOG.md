@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Rate-tint the discharge line in the chart: it blends from the idle color at
+  low draw toward the discharge color at the window max (90th percentile
+  reference), so drain intensity is visible at a glance.
+
 ## 0.4.1
 
 - Reorganize the stats into three labeled rows: Battery (capacity, health,

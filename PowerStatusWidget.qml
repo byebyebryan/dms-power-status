@@ -522,6 +522,17 @@ echo "AC=$ac"`;
         readonly property color chargeCol: Theme.success
         readonly property color idleCol: Theme.surfaceVariantText
 
+        // Linear blend between two colors (0..1), e.g. idleCol -> dischargeCol
+        // as the discharge rate approaches the window max.
+        function mixColor(a, b, t) {
+            return Qt.rgba(
+                a.r + (b.r - a.r) * t,
+                a.g + (b.g - a.g) * t,
+                a.b + (b.b - a.b) * t,
+                1
+            );
+        }
+
         Canvas {
             id: canvas
             anchors.fill: parent
@@ -550,6 +561,22 @@ echo "AC=$ac"`;
                 for (let i = 0; i < all.length; i++) {
                     if (all[i].t >= t0 - 3600)
                         pts.push(all[i])
+                }
+
+                // Reference for rate-based discharge tinting: 90th percentile of
+                // discharge watts in the window, so a single transient spike
+                // doesn't wash the whole curve toward the idle color.
+                let maxDW = 0
+                {
+                    const dw = []
+                    for (const p of pts) {
+                        if (p.c === 0 && typeof p.w === "number" && isFinite(p.w) && p.w > 0)
+                            dw.push(p.w)
+                    }
+                    if (dw.length > 0) {
+                        dw.sort((a, b) => a - b)
+                        maxDW = dw[Math.floor((dw.length - 1) * 0.9)]
+                    }
                 }
 
                 // soft grid: hairlines with labels
@@ -640,7 +667,9 @@ echo "AC=$ac"`;
                         ctx.fill()
                     }
 
-                    // stroke in sub-segments so each state gets its own color
+                    // stroke in sub-segments so each state gets its own color;
+                    // discharge is additionally rate-tinted from idle (low
+                    // draw) toward discharge (near the window max draw).
                     ctx.lineWidth = chart.lineWidth
                     ctx.lineJoin = "round"
                     ctx.lineCap = "round"
@@ -652,10 +681,23 @@ echo "AC=$ac"`;
                             seg.push(rp[i])
                             i++
                         }
-                        ctx.beginPath()
-                        tracePath(seg)
-                        ctx.strokeStyle = state === 1 ? chart.chargeCol : (state === 0 ? chart.dischargeCol : chart.idleCol)
-                        ctx.stroke()
+                        if (state === 0 && maxDW > 0) {
+                            for (let j = 1; j < seg.length; j++) {
+                                const rate = seg[j].w
+                                const t = (typeof rate === "number" && isFinite(rate) && rate > 0)
+                                    ? Math.min(1, rate / maxDW) : 0
+                                ctx.beginPath()
+                                ctx.moveTo(X(seg[j - 1].t), Y(seg[j - 1].v))
+                                ctx.lineTo(X(seg[j].t), Y(seg[j].v))
+                                ctx.strokeStyle = chart.mixColor(chart.idleCol, chart.dischargeCol, t)
+                                ctx.stroke()
+                            }
+                        } else {
+                            ctx.beginPath()
+                            tracePath(seg)
+                            ctx.strokeStyle = state === 1 ? chart.chargeCol : (state === 0 ? chart.dischargeCol : chart.idleCol)
+                            ctx.stroke()
+                        }
                     }
                 }
 
@@ -675,13 +717,19 @@ echo "AC=$ac"`;
 
                 ctx.restore()
 
-                // newest sample marker with level readout
+                // newest sample marker with level readout (rate-tinted when discharging)
                 const last = pts[pts.length - 1]
                 if (now - last.t < chart.widget.gapS) {
                     const mx = Math.min(X(last.t), padL + cw)
                     ctx.beginPath()
                     ctx.arc(mx, Y(last.v), chart.markerRadius, 0, Math.PI * 2)
-                    ctx.fillStyle = last.c === 1 ? chart.chargeCol : (last.c === 0 ? chart.dischargeCol : chart.idleCol)
+                    if (last.c === 1) {
+                        ctx.fillStyle = chart.chargeCol
+                    } else if (last.c === 0 && maxDW > 0 && typeof last.w === "number" && isFinite(last.w) && last.w > 0) {
+                        ctx.fillStyle = chart.mixColor(chart.idleCol, chart.dischargeCol, Math.min(1, last.w / maxDW))
+                    } else {
+                        ctx.fillStyle = last.c === 0 ? chart.dischargeCol : chart.idleCol
+                    }
                     ctx.fill()
                     ctx.font = chart.labelFont
                     ctx.textAlign = mx > padL + cw - 30 ? "right" : "left"
