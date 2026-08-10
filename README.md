@@ -12,8 +12,8 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
 - Live charge/discharge wattage and time remaining (charge-limit aware).
 - 24h charge history popout: themed canvas chart with charge / discharge /
   plugged-idle coloring, suspend gaps, legend, and a newest-sample marker.
-  The discharge line is rate-tinted — it fades from the idle color at low
-  draw toward the discharge color as drain approaches the window max.
+  The discharge line is rate-tinted — it fades from a muted discharge hue at
+  low draw to the full discharge color at the window's max observed draw.
 - Battery stats in the popout: full capacity, health, and charge limit.
 - Session stats since last unplug: energy drained, active discharge time, and
   suspended time — with min/avg/max discharge rate for active usage.

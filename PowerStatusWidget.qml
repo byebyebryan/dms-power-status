@@ -521,9 +521,12 @@ echo "AC=$ac"`;
         readonly property color dischargeCol: Theme.primary
         readonly property color chargeCol: Theme.success
         readonly property color idleCol: Theme.surfaceVariantText
+        // Muted discharge: same hue as discharge but desaturated toward the card
+        // surface, used as the low-rate end of the discharge tint.
+        readonly property color mutedDischargeCol: mixColor(dischargeCol, Theme.nestedSurface, 0.55)
 
-        // Linear blend between two colors (0..1), e.g. idleCol -> dischargeCol
-        // as the discharge rate approaches the window max.
+        // Linear blend between two colors (0..1), e.g. mutedDischargeCol ->
+        // dischargeCol as the discharge rate rises from the window minimum.
         function mixColor(a, b, t) {
             return Qt.rgba(
                 a.r + (b.r - a.r) * t,
@@ -563,10 +566,11 @@ echo "AC=$ac"`;
                         pts.push(all[i])
                 }
 
-                // Reference for rate-based discharge tinting: 90th percentile of
-                // discharge watts in the window, so a single transient spike
-                // doesn't wash the whole curve toward the idle color.
-                let maxDW = 0
+                // Range reference for rate-based discharge tinting: min/max of
+                // discharge watts in the window, so the tint spans the full
+                // observed draw range.
+                let dwMin = 0
+                let dwMax = 0
                 {
                     const dw = []
                     for (const p of pts) {
@@ -574,9 +578,22 @@ echo "AC=$ac"`;
                             dw.push(p.w)
                     }
                     if (dw.length > 0) {
-                        dw.sort((a, b) => a - b)
-                        maxDW = dw[Math.floor((dw.length - 1) * 0.9)]
+                        let lo = dw[0]
+                        let hi = dw[0]
+                        for (const v of dw) {
+                            if (v < lo) lo = v
+                            if (v > hi) hi = v
+                        }
+                        dwMin = lo
+                        dwMax = hi
                     }
+                }
+                const dischargeTint = w => {
+                    if (dwMax <= dwMin)
+                        return 1
+                    if (typeof w !== "number" || !isFinite(w))
+                        return 0
+                    return Math.min(1, Math.max(0, (w - dwMin) / (dwMax - dwMin)))
                 }
 
                 // soft grid: hairlines with labels
@@ -681,15 +698,12 @@ echo "AC=$ac"`;
                             seg.push(rp[i])
                             i++
                         }
-                        if (state === 0 && maxDW > 0) {
+                        if (state === 0 && dwMax > 0) {
                             for (let j = 1; j < seg.length; j++) {
-                                const rate = seg[j].w
-                                const t = (typeof rate === "number" && isFinite(rate) && rate > 0)
-                                    ? Math.min(1, rate / maxDW) : 0
                                 ctx.beginPath()
                                 ctx.moveTo(X(seg[j - 1].t), Y(seg[j - 1].v))
                                 ctx.lineTo(X(seg[j].t), Y(seg[j].v))
-                                ctx.strokeStyle = chart.mixColor(chart.idleCol, chart.dischargeCol, t)
+                                ctx.strokeStyle = chart.mixColor(chart.mutedDischargeCol, chart.dischargeCol, dischargeTint(seg[j].w))
                                 ctx.stroke()
                             }
                         } else {
@@ -725,8 +739,8 @@ echo "AC=$ac"`;
                     ctx.arc(mx, Y(last.v), chart.markerRadius, 0, Math.PI * 2)
                     if (last.c === 1) {
                         ctx.fillStyle = chart.chargeCol
-                    } else if (last.c === 0 && maxDW > 0 && typeof last.w === "number" && isFinite(last.w) && last.w > 0) {
-                        ctx.fillStyle = chart.mixColor(chart.idleCol, chart.dischargeCol, Math.min(1, last.w / maxDW))
+                    } else if (last.c === 0 && dwMax > 0) {
+                        ctx.fillStyle = chart.mixColor(chart.mutedDischargeCol, chart.dischargeCol, dischargeTint(last.w))
                     } else {
                         ctx.fillStyle = last.c === 0 ? chart.dischargeCol : chart.idleCol
                     }

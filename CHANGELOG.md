@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+
+- Rework discharge rate tint: blend within the discharge hue (muted → full
+  discharge color) instead of across to the idle color, and normalize over the
+  window's observed min→max discharge wattage.
+
 ## 0.4.2
 
 - Rate-tint the discharge line in the chart: it blends from the idle color at

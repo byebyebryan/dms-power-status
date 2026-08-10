@@ -98,10 +98,10 @@ two writers could lose a sample on read-modify-write — acceptable. A
 - Canvas line, discharge in `Theme.primary`, charging in `Theme.success`,
   plugged-idle in `Theme.surfaceVariantText`, suspend gaps as dashed
   connectors.
-- Discharge line is **rate-tinted**: each segment is blended from the idle
-  color (low draw) toward the discharge color (near the window max), using the
-  window's 90th percentile discharge wattage as the reference so a transient
-  spike can't wash the curve out. The newest-sample marker matches.
+- Discharge line is **rate-tinted**: each segment is blended within the
+  discharge hue from a muted discharge color (low draw) to the full discharge
+  color (high draw), normalized over the window's observed min→max discharge
+  wattage. The newest-sample marker matches.
 - Legend (Charging / Discharging / Plugged / Suspend) and a marker on the
   newest sample with its level.
 - 6h time ticks, 0/50/100% grid, theme-reactive repaint.
