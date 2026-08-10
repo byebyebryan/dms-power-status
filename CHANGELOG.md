@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- Restore the Active rate as a second, unlabeled row beneath Active (min/avg/
+  max) instead of folding six tiles into one row.
+
 ## 0.5.1
 
 - Reorganize stats: swap Limit/Health in Battery, move Suspended above Active,

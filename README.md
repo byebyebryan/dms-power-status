@@ -17,7 +17,7 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
 - Battery stats in the popout: design capacity, charge limit, and health.
 - Session stats since last unplug: starting capacity/%, elapsed time, plus
   estimated suspended consumption (Wh, %, time) and measured active
-  consumption (drained Wh, battery drop, time, and min/avg/max rate).
+  consumption (drained Wh, battery drop, time) with a min/avg/max rate row.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Reads battery data directly from sysfs (like the zsh battery prompt); no DMS
   `BatteryService` dependency.

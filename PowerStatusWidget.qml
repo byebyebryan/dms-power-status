@@ -1085,13 +1085,20 @@ echo "AC=$ac"`;
                             ]
                         }
 
-                        // active consumption (measured), with rate spread folded in
+                        // active consumption (measured)
                         StatRow {
                             title: "Active"
                             items: [
                                 { "label": "Drained", "value": root.formatEnergyWh(root.stats.activeWh) },
                                 { "label": "Drop", "value": root.formatPct(root.stats.activePct) },
-                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) },
+                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) }
+                            ]
+                        }
+
+                        // active discharge rate spread (no header, aligns under Active)
+                        StatRow {
+                            title: ""
+                            items: [
                                 { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
                                 { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
                                 { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }

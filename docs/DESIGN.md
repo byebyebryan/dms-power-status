@@ -122,8 +122,9 @@ last unplug.
   summed; Wh is that drop converted against design capacity. Time is the gap
   duration.
 - **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
-  Wh), drop (battery-% loss summed across each continuous active run), active
-  time, and the min/avg/max discharge rate.
+  Wh), drop (battery-% loss summed across each continuous active run), and
+  active time. A second unlabeled row beneath shows the min/avg/max discharge
+  rate, aligned under the Active values.
 
 "Active" means regular discharge samples; "suspended" means recording gaps
 (suspend/off). If there's no unplug in the window (was already discharging, or
