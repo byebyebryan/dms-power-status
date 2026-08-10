@@ -864,7 +864,7 @@ echo "AC=$ac"`;
 
             delegate: Column {
                 spacing: 2
-                width: (srow.width - srow.titleWidth - srow.spacing * 3) / 3
+                width: (srow.width - srow.titleWidth - srow.spacing * srow.items.length) / srow.items.length
 
                 StyledText {
                     text: modelData.label
@@ -1060,8 +1060,8 @@ echo "AC=$ac"`;
                             title: "Battery"
                             items: [
                                 { "label": "Design cap", "value": root.formatEnergyWh(root._heldEnergyFullDesign) },
-                                { "label": "Health", "value": root.formatHealth() },
-                                { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" }
+                                { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
+                                { "label": "Health", "value": root.formatHealth() }
                             ]
                         }
 
@@ -1075,26 +1075,6 @@ echo "AC=$ac"`;
                             ]
                         }
 
-                        // active consumption (measured)
-                        StatRow {
-                            title: "Active"
-                            items: [
-                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.activeWh) },
-                                { "label": "Drop", "value": root.formatPct(root.stats.activePct) },
-                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) }
-                            ]
-                        }
-
-                        // active discharge rate spread
-                        StatRow {
-                            title: "Active rate"
-                            items: [
-                                { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
-                                { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
-                                { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
-                            ]
-                        }
-
                         // suspended consumption (estimated)
                         StatRow {
                             title: "Suspended"
@@ -1102,6 +1082,19 @@ echo "AC=$ac"`;
                                 { "label": "Drained", "value": root.formatEnergyWh(root.stats.suspendedWh) },
                                 { "label": "Drop", "value": root.formatPct(root.stats.suspendedPct) },
                                 { "label": "Time", "value": root.formatDuration(root.stats.suspendedSeconds) }
+                            ]
+                        }
+
+                        // active consumption (measured), with rate spread folded in
+                        StatRow {
+                            title: "Active"
+                            items: [
+                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.activeWh) },
+                                { "label": "Drop", "value": root.formatPct(root.stats.activePct) },
+                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) },
+                                { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
+                                { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
+                                { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
                             ]
                         }
                     }

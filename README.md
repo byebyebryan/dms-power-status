@@ -14,10 +14,10 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
   plugged-idle coloring, suspend gaps, legend, and a newest-sample marker.
   The discharge line is rate-tinted — it fades from a muted discharge hue at
   low draw to the full discharge color at the window's max observed draw.
-- Battery stats in the popout: design capacity, health, and charge limit.
+- Battery stats in the popout: design capacity, charge limit, and health.
 - Session stats since last unplug: starting capacity/%, elapsed time, plus
-  measured active consumption (drained Wh, battery drop, time, min/avg/max
-  rate) and estimated suspended consumption (Wh, %, time).
+  estimated suspended consumption (Wh, %, time) and measured active
+  consumption (drained Wh, battery drop, time, and min/avg/max rate).
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Reads battery data directly from sysfs (like the zsh battery prompt); no DMS
   `BatteryService` dependency.

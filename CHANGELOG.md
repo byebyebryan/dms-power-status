@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Reorganize stats: swap Limit/Health in Battery, move Suspended above Active,
+  and fold min/avg/max rate into the Active row (dropping the separate
+  "Active rate" header).
+
 ## 0.5.0
 
 - Expand stats into five labeled rows: Battery (design capacity, health,

@@ -109,21 +109,21 @@ two writers could lose a sample on read-modify-write — acceptable. A
 
 ## Usage stats
 
-Five labeled rows beneath the chart. Battery stats come straight from the held
+Four labeled rows beneath the chart. Battery stats come straight from the held
 sysfs values; session stats are computed from the persisted samples since the
 last unplug.
 
-- **Battery** — design capacity (`energy_full_design`, Wh), health (current
-  capacity vs design, %), charge limit (`charge_control_end_threshold`, %).
+- **Battery** — design capacity (`energy_full_design`, Wh), charge limit
+  (`charge_control_end_threshold`, %), health (current capacity vs design, %).
 - **Since unplug** — starting capacity (`start % × design capacity`, Wh),
   starting battery % at the unplug moment, and elapsed time since unplug.
-- **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
-  Wh), drop (battery-% loss summed across each continuous active run), and
-  active time. Min/avg/max rate in its own row.
 - **Suspended** — *estimated* consumption, since no draw is logged during
   gaps: for each recording gap the level drop `start% − end%` is recorded and
   summed; Wh is that drop converted against design capacity. Time is the gap
   duration.
+- **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
+  Wh), drop (battery-% loss summed across each continuous active run), active
+  time, and the min/avg/max discharge rate.
 
 "Active" means regular discharge samples; "suspended" means recording gaps
 (suspend/off). If there's no unplug in the window (was already discharging, or
