@@ -549,10 +549,10 @@ echo "AC=$ac"`;
                     }
                 }
 
-                // faint connectors across recording gaps (suspend)
-                ctx.setLineDash([2, 5])
-                ctx.lineWidth = 1
-                ctx.strokeStyle = Qt.rgba(Theme.outline.r, Theme.outline.g, Theme.outline.b, 0.35)
+                // connectors across recording gaps (suspend), matching the legend swatch
+                ctx.setLineDash([3, 3])
+                ctx.lineWidth = 2
+                ctx.strokeStyle = chart.idleCol
                 for (let r = 1; r < runs.length; r++) {
                     const a = runs[r - 1][runs[r - 1].length - 1]
                     const b = runs[r][0]
