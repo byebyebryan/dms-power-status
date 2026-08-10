@@ -4,14 +4,16 @@ Compact adaptive battery and power usage widget for DankMaterialShell.
 
 It replaces the built-in `battery` bar widget when you want battery percentage
 plus live charge/discharge power and estimated time remaining in the same small
-bar pill — and adds a 12h charge history chart as its popout.
+bar pill — and adds a 24h charge history chart with usage stats as its popout.
 
 ## Features
 
 - Battery icon + percentage in a compact pill.
 - Live charge/discharge wattage and time remaining (charge-limit aware).
-- 12h charge history popout: themed canvas chart with charge / discharge /
+- 24h charge history popout: themed canvas chart with charge / discharge /
   plugged-idle coloring, suspend gaps, legend, and a newest-sample marker.
+- Usage stats in the popout: discharge time, energy drained, and min/avg/max
+  discharge wattage over the 24h window.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Reads battery data directly from sysfs (like the zsh battery prompt); no DMS
   `BatteryService` dependency.

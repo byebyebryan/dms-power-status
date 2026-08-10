@@ -11,7 +11,8 @@ single compact pill. The core premise — wattage + time-to-empty/full at a
 glance — is not fulfilled by any other plugin.
 
 Originally it only rendered the pill and opened the built-in DMS battery popout
-on click. It now ships its own popout with a 12h charge history chart.
+on click. It now ships its own popout with a 24h charge history chart plus
+usage stats.
 
 `dms-battery-plus` (arcatva) has a similar panel with a chart, stat tiles, and
 a power-profile switcher. We deliberately kept our scope smaller (see Goals).
@@ -21,8 +22,10 @@ a power-profile switcher. We deliberately kept our scope smaller (see Goals).
 - Keep the pill (percentage · watts · eta) as the differentiator.
 - Add a charge history chart as the popout content (replacing the reuse of the
   built-in battery popout).
-- Stay minimal. NOT in scope: health/capacity/energy stat tiles, power-profile
-  switcher, voltage, avg-drain/runtime tiles, "since unplug" summary.
+- Add a compact usage-stats row (discharge time, energy drained, min/avg/max
+  discharge wattage) computed from the same samples.
+- Stay minimal. NOT in scope: health/capacity stat tiles, power-profile
+  switcher, voltage, "since unplug" summary.
 
 ## Data source: direct sysfs (not DMS BatteryService)
 
@@ -77,9 +80,9 @@ debounced). The sampler lives on the plugin root (a persistent instance, alive
 while DMS runs), so it collects in the background whether or not the popout is
 open.
 
-- 60s heartbeat sample → `{t, level, state}` plus immediate samples on
+- 60s heartbeat sample → `{t, level, state, watts}` plus immediate samples on
   plug/charging boundaries.
-- 12h window; pruned on load/save. ~720 entries, trivial size.
+- 24h window; pruned on load/save. ~1440 entries, trivial size.
 
 ### Single instance assumption
 
@@ -95,14 +98,27 @@ two writers could lose a sample on read-modify-write — acceptable. A
   connectors.
 - Legend (Charging / Discharging / Plugged / Suspend) and a marker on the
   newest sample with its level.
-- 3h time ticks, 0/50/100% grid, theme-reactive repaint.
-- 12h window only (constant). No 12/24h toggle — deliberately skipped.
+- 6h time ticks, 0/50/100% grid, theme-reactive repaint.
+- 24h window only (constant). No 12/24h toggle — deliberately skipped.
+
+## Usage stats
+
+Computed from the persisted samples over the same 24h window and shown in a
+row beneath the chart (Discharge / Drained / Min / Avg / Max):
+
+- **Discharge** — total time spent discharging (state 0), summing sample gaps
+  below the suspend threshold.
+- **Drained** — energy consumed while discharging, time-weighted from the
+  per-sample wattage (`Σ w·dt / 3600` Wh).
+- **Min / Avg / Max** — discharge wattage spread; the average is time-weighted.
+- Samples recorded before the `w` field existed are skipped for watt/energy
+  stats (state/time still count), so upgrading never misreports.
 
 ## Trade-offs accepted
 
 - **No pre-install history.** Self-sampling only accumulates after the plugin
   runs; unlike battery-plus we don't backfill from UPower history.
-- **No voltage**, **no stat tiles**, **no power profiles** — out of scope.
+- **No voltage**, **no power profiles**, **no health tiles** — out of scope.
 - **No history during suspend** — samples stop while suspended.
 - sysfs rather than UPower D-Bus: matches the zsh prompt, works on machines
   where the UPower service layer might aggregate differently, and is the only

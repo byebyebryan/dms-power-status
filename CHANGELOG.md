@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Widen the chart popout to 680px and extend the history window to 24h (6h
+  time ticks instead of 3h).
+- Add usage stats below the graph: discharge duration, energy drained, and
+  min/avg/max discharge wattage over the 24h window.
+- Samples now carry wattage; stats skip older samples saved without it.
+
 ## 0.2.0
 
 - Add a 12h charge history chart as the popout, replacing the click-through to

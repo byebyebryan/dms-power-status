@@ -21,7 +21,7 @@ PluginComponent {
     // never blanks the pill — we keep the previous valid value instead.
 
     readonly property string pid: "powerStatus"
-    readonly property int windowSeconds: 12 * 3600
+    readonly property int windowSeconds: 24 * 3600
     readonly property int gapS: 1200
     readonly property string _refreshProcId: "powerStatus.refresh." + Math.random().toString(36).slice(2)
 
@@ -218,7 +218,8 @@ echo "AC=$ac"`;
         samples = samples.concat([{
             "t": t,
             "v": _heldLevel,
-            "c": sampleState()
+            "c": sampleState(),
+            "w": _heldWatts
         }]);
         saveSamples();
     }
@@ -393,6 +394,76 @@ echo "AC=$ac"`;
         return "Discharging";
     }
 
+    // ── Usage stats (over the 24h window) ──
+    // Computed from the persisted samples: discharge duration, energy drained
+    // while discharging, and min/avg/max discharge wattage. Old samples saved
+    // before the "w" field existed are skipped for watt/energy math.
+
+    readonly property var stats: computeStats()
+
+    function computeStats() {
+        const t0 = Math.floor(Date.now() / 1000) - windowSeconds - 3600;
+        const pts = [];
+        for (let i = 0; i < samples.length; i++) {
+            if (samples[i].t >= t0)
+                pts.push(samples[i]);
+        }
+        let dischargeS = 0;
+        let dischargeWh = 0;
+        let minW = Infinity;
+        let maxW = -Infinity;
+        let sumWt = 0;
+        let sumDt = 0;
+        for (let i = 1; i < pts.length; i++) {
+            const a = pts[i - 1];
+            const b = pts[i];
+            const dt = b.t - a.t;
+            if (dt <= 0 || dt > gapS)
+                continue;
+            if (b.c !== 0)
+                continue;
+            dischargeS += dt;
+            const w = b.w;
+            if (typeof w === "number" && isFinite(w) && w >= 0) {
+                dischargeWh += w * dt / 3600;
+                if (w < minW)
+                    minW = w;
+                if (w > maxW)
+                    maxW = w;
+                sumWt += w * dt;
+                sumDt += dt;
+            }
+        }
+        return {
+            "dischargeSeconds": dischargeS,
+            "dischargeWh": dischargeWh,
+            "minWatts": minW === Infinity ? NaN : minW,
+            "avgWatts": sumDt > 0 ? sumWt / sumDt : NaN,
+            "maxWatts": maxW === -Infinity ? NaN : maxW
+        };
+    }
+
+    function formatDuration(seconds) {
+        if (seconds === undefined || seconds === null || isNaN(seconds) || seconds <= 0)
+            return "–";
+        const totalMinutes = Math.round(seconds / 60);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    }
+
+    function formatEnergyWh(wh) {
+        if (wh === undefined || wh === null || isNaN(wh) || wh < 0)
+            return "–";
+        return wh < 10 ? wh.toFixed(1) + "Wh" : wh.toFixed(0) + "Wh";
+    }
+
+    function formatWatt(v) {
+        if (v === undefined || v === null || isNaN(v) || v < 0)
+            return "–";
+        return v < 10 ? v.toFixed(1) + "W" : v.toFixed(0) + "W";
+    }
+
     // ── Chart ──
 
     component BatteryChart: Item {
@@ -459,10 +530,10 @@ echo "AC=$ac"`;
                     ctx.fillText(v + "%", padL, Y(v) - 2)
                 }
 
-                // time ticks on round hours
+                // time ticks on round hours (6h on 24h window, 3h on 12h)
                 ctx.textBaseline = "top"
                 ctx.textAlign = "center"
-                const stepS = 3 * 3600
+                const stepS = chart.widget.windowSeconds >= 24 * 3600 ? 6 * 3600 : 3 * 3600
                 const d0 = new Date(t0 * 1000)
                 const dayStart = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime() / 1000
                 for (let tick = dayStart + Math.ceil((t0 - dayStart) / stepS) * stepS; tick <= now; tick += stepS) {
@@ -774,8 +845,50 @@ echo "AC=$ac"`;
 
                         BatteryChart {
                             width: parent.width
-                            height: 220
+                            height: 240
                             widget: root
+                        }
+
+                        Rectangle {
+                            width: parent.width
+                            height: 1
+                            color: Theme.outlineLight
+                        }
+
+                        // usage stats: discharge duration/energy + watt spread
+                        Row {
+                            id: statsRow
+                            width: parent.width
+                            spacing: Theme.spacingM
+
+                            Repeater {
+                                model: [
+                                    { "label": "Discharge", "value": root.formatDuration(root.stats.dischargeSeconds) },
+                                    { "label": "Drained", "value": root.formatEnergyWh(root.stats.dischargeWh) },
+                                    { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
+                                    { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
+                                    { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
+                                ]
+
+                                delegate: Column {
+                                    spacing: 2
+                                    width: (statsRow.width - statsRow.spacing * 4) / 5
+
+                                    StyledText {
+                                        text: modelData.label
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                    }
+
+                                    StyledText {
+                                        text: modelData.value
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Bold
+                                        color: Theme.surfaceText
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -783,8 +896,8 @@ echo "AC=$ac"`;
         }
     }
 
-    popoutWidth: 520
-    popoutHeight: 400
+    popoutWidth: 680
+    popoutHeight: 470
 
     Component {
         id: horizontalPill
