@@ -723,6 +723,55 @@ echo "AC=$ac"`;
         Component.onCompleted: canvas.requestPaint()
     }
 
+    // ── Stats ──
+
+    // One labeled stats row: a section title on the left and three
+    // label/value tiles spread across the remaining width.
+    component StatRow: Row {
+        id: srow
+
+        required property string title
+        required property var items
+
+        readonly property real titleWidth: 92
+
+        width: parent.width
+        spacing: Theme.spacingM
+
+        StyledText {
+            text: srow.title
+            width: srow.titleWidth
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.surfaceVariantText
+            elide: Text.ElideRight
+            anchors.verticalCenter: parent.verticalCenter
+        }
+
+        Repeater {
+            model: srow.items
+
+            delegate: Column {
+                spacing: 2
+                width: (srow.width - srow.titleWidth - srow.spacing * 3) / 3
+
+                StyledText {
+                    text: modelData.label
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: Theme.surfaceVariantText
+                    elide: Text.ElideRight
+                }
+
+                StyledText {
+                    text: modelData.value
+                    font.pixelSize: Theme.fontSizeMedium
+                    font.weight: Font.Bold
+                    color: Theme.surfaceText
+                    elide: Text.ElideRight
+                }
+            }
+        }
+    }
+
     // ── Popout ──
 
     popoutContent: Component {
@@ -895,75 +944,33 @@ echo "AC=$ac"`;
                         }
 
                         // battery stats
-                        Row {
-                            id: batteryRow
-                            width: parent.width
-                            spacing: Theme.spacingM
-
-                            Repeater {
-                                model: [
-                                    { "label": "Capacity", "value": root.formatEnergyWh(root._heldEnergyFull) },
-                                    { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
-                                    { "label": "Health", "value": root.formatHealth() }
-                                ]
-
-                                delegate: Column {
-                                    spacing: 2
-                                    width: (batteryRow.width - batteryRow.spacing * 2) / 3
-
-                                    StyledText {
-                                        text: modelData.label
-                                        font.pixelSize: Theme.fontSizeSmall
-                                        color: Theme.surfaceVariantText
-                                    }
-
-                                    StyledText {
-                                        text: modelData.value
-                                        font.pixelSize: Theme.fontSizeMedium
-                                        font.weight: Font.Bold
-                                        color: Theme.surfaceText
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
+                        StatRow {
+                            title: "Battery"
+                            items: [
+                                { "label": "Capacity", "value": root.formatEnergyWh(root._heldEnergyFull) },
+                                { "label": "Health", "value": root.formatHealth() },
+                                { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" }
+                            ]
                         }
 
-                        // discharge session (since last unplug): active + suspended/idle
-                        Row {
-                            id: sessionRow
-                            width: parent.width
-                            spacing: Theme.spacingM
+                        // discharge session (since last unplug)
+                        StatRow {
+                            title: "Since unplug"
+                            items: [
+                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.dischargeWh) },
+                                { "label": "Discharge", "value": root.formatDuration(root.stats.activeSeconds) },
+                                { "label": "Suspended", "value": root.formatDuration(root.stats.suspendedSeconds) }
+                            ]
+                        }
 
-                            Repeater {
-                                model: [
-                                    { "label": "Active", "value": root.formatDuration(root.stats.activeSeconds) },
-                                    { "label": "Suspended", "value": root.formatDuration(root.stats.suspendedSeconds) },
-                                    { "label": "Drained", "value": root.formatEnergyWh(root.stats.dischargeWh) },
-                                    { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
-                                    { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
-                                    { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
-                                ]
-
-                                delegate: Column {
-                                    spacing: 2
-                                    width: (sessionRow.width - sessionRow.spacing * 5) / 6
-
-                                    StyledText {
-                                        text: modelData.label
-                                        font.pixelSize: Theme.fontSizeSmall
-                                        color: Theme.surfaceVariantText
-                                        elide: Text.ElideRight
-                                    }
-
-                                    StyledText {
-                                        text: modelData.value
-                                        font.pixelSize: Theme.fontSizeMedium
-                                        font.weight: Font.Bold
-                                        color: Theme.surfaceText
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
+                        // active discharge rate spread
+                        StatRow {
+                            title: "Discharge rate"
+                            items: [
+                                { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
+                                { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
+                                { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
+                            ]
                         }
                     }
                 }

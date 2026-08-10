@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Reorganize the stats into three labeled rows: Battery (capacity, health,
+  limit), Since unplug (drained, discharge time, suspended time), and
+  Discharge rate (min/avg/max). "Discharge" now consistently means active
+  discharge only.
+
 ## 0.4.0
 
 - Add battery stats row: full capacity, charge limit, and health (capacity vs

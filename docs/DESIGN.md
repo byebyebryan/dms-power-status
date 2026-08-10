@@ -105,29 +105,25 @@ two writers could lose a sample on read-modify-write — acceptable. A
 
 ## Usage stats
 
-Two rows beneath the chart. Battery stats come straight from the held sysfs
-values; discharge stats are session-based (since the last unplug), not the
+Three labeled rows beneath the chart. Battery stats come straight from the held
+sysfs values; discharge stats are session-based (since the last unplug), not the
 whole 24h window.
 
-Battery row:
-
-- **Capacity** — full-charge capacity (`energy_full`, Wh).
-- **Limit** — firmware charge limit (`charge_control_end_threshold`, %).
-- **Health** — capacity vs design (`energy_full / energy_full_design`, %).
-
-Discharge session row (from the last unplug transition to now):
-
-- **Active** — time in state 0 with regular samples (actually discharging).
-- **Suspended** — recording gaps within the session (suspend/off time that
+- **Battery** — capacity (`energy_full`, Wh), health (capacity vs design, %),
+  charge limit (`charge_control_end_threshold`, %).
+- **Since unplug** — drained (energy consumed while actively discharging,
+  time-weighted `Σ w·dt / 3600` Wh), discharge time (active state-0 samples),
+  suspended time (recording gaps within the session — suspend/off time that
   still drains the battery).
-- **Drained** — energy consumed while actively discharging, time-weighted from
-  the per-sample wattage (`Σ w·dt / 3600` Wh).
-- **Min / Avg / Max** — active-discharge wattage spread; average is
-  time-weighted.
-- If there's no unplug in the window (was already discharging, or never), the
-  session falls back to the window start or shows all dashes.
-- Samples recorded before the `w` field existed are skipped for watt/energy
-  math (time still counts), so upgrading never misreports.
+- **Discharge rate** — min/avg/max wattage spread over active discharge; the
+  average is time-weighted.
+
+"Discharge" always means active discharge (regular samples), so the rate and
+drained numbers reflect actual usage, not suspend drift. If there's no unplug in
+the window (was already discharging, or never), the session falls back to the
+window start or shows all dashes. Samples recorded before the `w` field existed
+are skipped for watt/energy math (time still counts), so upgrading never
+misreports.
 
 ## Trade-offs accepted
 
