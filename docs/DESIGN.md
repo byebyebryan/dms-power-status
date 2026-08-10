@@ -22,10 +22,11 @@ a power-profile switcher. We deliberately kept our scope smaller (see Goals).
 - Keep the pill (percentage · watts · eta) as the differentiator.
 - Add a charge history chart as the popout content (replacing the reuse of the
   built-in battery popout).
-- Add a compact usage-stats row (discharge time, energy drained, min/avg/max
-  discharge wattage) computed from the same samples.
-- Stay minimal. NOT in scope: health/capacity stat tiles, power-profile
-  switcher, voltage, "since unplug" summary.
+- Add a compact usage-stats section: battery stats (capacity, charge limit,
+  health) plus a session-based discharge breakdown (active vs suspended time,
+  energy drained, min/avg/max wattage since last unplug).
+- Stay minimal. NOT in scope: power-profile switcher, voltage, charge-cycle
+  history tiles.
 
 ## Data source: direct sysfs (not DMS BatteryService)
 
@@ -48,6 +49,7 @@ Fields read in one `sh -c` (µW/µWh converted to W/Wh):
   `Full`)
 - `power_now`, with `current_now × voltage_now` fallback → watts
 - `energy_now` / `energy_full` → Wh for ETA math
+- `energy_full_design` (`charge_full_design` fallback) → Wh for health
 - any supply's `online` → AC / plugged-in
 - `charge_control_end_threshold` → charge limit
 
@@ -103,23 +105,39 @@ two writers could lose a sample on read-modify-write — acceptable. A
 
 ## Usage stats
 
-Computed from the persisted samples over the same 24h window and shown in a
-row beneath the chart (Discharge / Drained / Min / Avg / Max):
+Two rows beneath the chart. Battery stats come straight from the held sysfs
+values; discharge stats are session-based (since the last unplug), not the
+whole 24h window.
 
-- **Discharge** — total time spent discharging (state 0), summing sample gaps
-  below the suspend threshold.
-- **Drained** — energy consumed while discharging, time-weighted from the
-  per-sample wattage (`Σ w·dt / 3600` Wh).
-- **Min / Avg / Max** — discharge wattage spread; the average is time-weighted.
+Battery row:
+
+- **Capacity** — full-charge capacity (`energy_full`, Wh).
+- **Limit** — firmware charge limit (`charge_control_end_threshold`, %).
+- **Health** — capacity vs design (`energy_full / energy_full_design`, %).
+
+Discharge session row (from the last unplug transition to now):
+
+- **Active** — time in state 0 with regular samples (actually discharging).
+- **Suspended** — recording gaps within the session (suspend/off time that
+  still drains the battery).
+- **Drained** — energy consumed while actively discharging, time-weighted from
+  the per-sample wattage (`Σ w·dt / 3600` Wh).
+- **Min / Avg / Max** — active-discharge wattage spread; average is
+  time-weighted.
+- If there's no unplug in the window (was already discharging, or never), the
+  session falls back to the window start or shows all dashes.
 - Samples recorded before the `w` field existed are skipped for watt/energy
-  stats (state/time still count), so upgrading never misreports.
+  math (time still counts), so upgrading never misreports.
 
 ## Trade-offs accepted
 
 - **No pre-install history.** Self-sampling only accumulates after the plugin
   runs; unlike battery-plus we don't backfill from UPower history.
-- **No voltage**, **no power profiles**, **no health tiles** — out of scope.
-- **No history during suspend** — samples stop while suspended.
+- **No voltage**, **no power profiles** — out of scope.
+- **No history during suspend** — samples stop while suspended (the stats still
+  count suspended time from the recording gaps).
+- **Health is derived** from `energy_full / energy_full_design`; some firmwares
+  don't expose design capacity, in which case health shows a dash.
 - sysfs rather than UPower D-Bus: matches the zsh prompt, works on machines
   where the UPower service layer might aggregate differently, and is the only
   place the charge limit is reliably exposed.

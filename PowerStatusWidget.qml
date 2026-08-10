@@ -63,6 +63,7 @@ PluginComponent {
     property real _heldWatts: 0
     property real _heldEnergyNow: 0
     property real _heldEnergyFull: 0
+    property real _heldEnergyFullDesign: 0
     property int _heldLimit: 100
 
     // state-changed flags so we sample at boundaries
@@ -124,6 +125,10 @@ PluginComponent {
         if (!isNaN(ef) && ef > 0)
             _heldEnergyFull = ef / 1000000; // Wh
 
+        const efd = parseInt(kv["ENERGY_FULL_DESIGN"], 10);
+        if (!isNaN(efd) && efd > 0)
+            _heldEnergyFullDesign = efd / 1000000; // Wh
+
         const lim = parseInt(kv["LIMIT"], 10);
         if (!isNaN(lim) && lim > 0 && lim <= 100)
             _heldLimit = lim;
@@ -158,6 +163,8 @@ for s in /sys/class/power_supply/*; do
   v=$(cat "$s/voltage_now" 2>/dev/null)
   en=$(cat "$s/energy_now" 2>/dev/null)
   ef=$(cat "$s/energy_full" 2>/dev/null)
+  efd=$(cat "$s/energy_full_design" 2>/dev/null)
+  if [ -z "$efd" ]; then efd=$(cat "$s/charge_full_design" 2>/dev/null); fi
   lim=$(cat "$s/charge_control_end_threshold" 2>/dev/null)
   if [ -z "$lim" ]; then lim=$(cat "$s/charge_control_limit" 2>/dev/null); fi
   if [ -z "$lim" ]; then lim=$(cat "$s/charge_stop_threshold" 2>/dev/null); fi
@@ -168,6 +175,7 @@ for s in /sys/class/power_supply/*; do
   echo "VOLT=$v"
   echo "ENERGY_NOW=$en"
   echo "ENERGY_FULL=$ef"
+  echo "ENERGY_FULL_DESIGN=$efd"
   echo "LIMIT=$lim"
   break
 done
@@ -394,10 +402,14 @@ echo "AC=$ac"`;
         return "Discharging";
     }
 
-    // ── Usage stats (over the 24h window) ──
-    // Computed from the persisted samples: discharge duration, energy drained
-    // while discharging, and min/avg/max discharge wattage. Old samples saved
-    // before the "w" field existed are skipped for watt/energy math.
+    // ── Usage stats ──
+    // Discharge stats are session-based: they count from the last unplug
+    // (transition out of the plugged states) to now, split into active
+    // discharge (regular samples) and suspended/idle discharge (recording gaps,
+    // i.e. suspend/off time that still drains the battery). Watt/energy math
+    // applies only to active discharge; old samples saved without "w" are
+    // skipped for it. Battery stats (full capacity, charge limit, health) come
+    // from the held sysfs values.
 
     readonly property var stats: computeStats()
 
@@ -408,34 +420,55 @@ echo "AC=$ac"`;
             if (samples[i].t >= t0)
                 pts.push(samples[i]);
         }
-        let dischargeS = 0;
+
+        // Session start = last unplug transition (last time a plugged sample
+        // was followed by a discharging one). If we're discharging and no
+        // transition is in the window, the unplug predates it — use window start.
+        let startIdx = -1;
+        for (let i = 1; i < pts.length; i++) {
+            if (pts[i - 1].c !== 0 && pts[i].c === 0)
+                startIdx = i;
+        }
+        const last = pts.length > 0 ? pts[pts.length - 1] : null;
+        if (startIdx < 0 && last && last.c === 0)
+            startIdx = 0;
+
+        let activeS = 0;
+        let suspendedS = 0;
         let dischargeWh = 0;
         let minW = Infinity;
         let maxW = -Infinity;
         let sumWt = 0;
         let sumDt = 0;
-        for (let i = 1; i < pts.length; i++) {
-            const a = pts[i - 1];
-            const b = pts[i];
-            const dt = b.t - a.t;
-            if (dt <= 0 || dt > gapS)
-                continue;
-            if (b.c !== 0)
-                continue;
-            dischargeS += dt;
-            const w = b.w;
-            if (typeof w === "number" && isFinite(w) && w >= 0) {
-                dischargeWh += w * dt / 3600;
-                if (w < minW)
-                    minW = w;
-                if (w > maxW)
-                    maxW = w;
-                sumWt += w * dt;
-                sumDt += dt;
+        if (startIdx >= 0) {
+            for (let i = startIdx + 1; i < pts.length; i++) {
+                const a = pts[i - 1];
+                const b = pts[i];
+                if (b.c !== 0)
+                    break;
+                const dt = b.t - a.t;
+                if (dt <= 0)
+                    continue;
+                if (dt > gapS) {
+                    suspendedS += dt;
+                    continue;
+                }
+                activeS += dt;
+                const w = b.w;
+                if (typeof w === "number" && isFinite(w) && w >= 0) {
+                    dischargeWh += w * dt / 3600;
+                    if (w < minW)
+                        minW = w;
+                    if (w > maxW)
+                        maxW = w;
+                    sumWt += w * dt;
+                    sumDt += dt;
+                }
             }
         }
         return {
-            "dischargeSeconds": dischargeS,
+            "activeSeconds": activeS,
+            "suspendedSeconds": suspendedS,
             "dischargeWh": dischargeWh,
             "minWatts": minW === Infinity ? NaN : minW,
             "avgWatts": sumDt > 0 ? sumWt / sumDt : NaN,
@@ -462,6 +495,12 @@ echo "AC=$ac"`;
         if (v === undefined || v === null || isNaN(v) || v < 0)
             return "–";
         return v < 10 ? v.toFixed(1) + "W" : v.toFixed(0) + "W";
+    }
+
+    function formatHealth() {
+        if (_heldEnergyFullDesign <= 0 || _heldEnergyFull <= 0)
+            return "–";
+        return Math.round(_heldEnergyFull / _heldEnergyFullDesign * 100) + "%";
     }
 
     // ── Chart ──
@@ -855,15 +894,50 @@ echo "AC=$ac"`;
                             color: Theme.outlineLight
                         }
 
-                        // usage stats: discharge duration/energy + watt spread
+                        // battery stats
                         Row {
-                            id: statsRow
+                            id: batteryRow
                             width: parent.width
                             spacing: Theme.spacingM
 
                             Repeater {
                                 model: [
-                                    { "label": "Discharge", "value": root.formatDuration(root.stats.dischargeSeconds) },
+                                    { "label": "Capacity", "value": root.formatEnergyWh(root._heldEnergyFull) },
+                                    { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
+                                    { "label": "Health", "value": root.formatHealth() }
+                                ]
+
+                                delegate: Column {
+                                    spacing: 2
+                                    width: (batteryRow.width - batteryRow.spacing * 2) / 3
+
+                                    StyledText {
+                                        text: modelData.label
+                                        font.pixelSize: Theme.fontSizeSmall
+                                        color: Theme.surfaceVariantText
+                                    }
+
+                                    StyledText {
+                                        text: modelData.value
+                                        font.pixelSize: Theme.fontSizeMedium
+                                        font.weight: Font.Bold
+                                        color: Theme.surfaceText
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+                        }
+
+                        // discharge session (since last unplug): active + suspended/idle
+                        Row {
+                            id: sessionRow
+                            width: parent.width
+                            spacing: Theme.spacingM
+
+                            Repeater {
+                                model: [
+                                    { "label": "Active", "value": root.formatDuration(root.stats.activeSeconds) },
+                                    { "label": "Suspended", "value": root.formatDuration(root.stats.suspendedSeconds) },
                                     { "label": "Drained", "value": root.formatEnergyWh(root.stats.dischargeWh) },
                                     { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
                                     { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
@@ -872,12 +946,13 @@ echo "AC=$ac"`;
 
                                 delegate: Column {
                                     spacing: 2
-                                    width: (statsRow.width - statsRow.spacing * 4) / 5
+                                    width: (sessionRow.width - sessionRow.spacing * 5) / 6
 
                                     StyledText {
                                         text: modelData.label
                                         font.pixelSize: Theme.fontSizeSmall
                                         color: Theme.surfaceVariantText
+                                        elide: Text.ElideRight
                                     }
 
                                     StyledText {
@@ -897,7 +972,7 @@ echo "AC=$ac"`;
     }
 
     popoutWidth: 680
-    popoutHeight: 470
+    popoutHeight: 500
 
     Component {
         id: horizontalPill

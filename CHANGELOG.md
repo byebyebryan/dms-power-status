@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Add battery stats row: full capacity, charge limit, and health (capacity vs
+  design, from `energy_full_design`).
+- Discharge stats now count from the last unplug (session-based) instead of the
+  whole 24h window, split into active discharge and suspended/idle discharge
+  time. Energy and min/avg/max wattage apply to active discharge only.
+
 ## 0.3.0
 
 - Widen the chart popout to 680px and extend the history window to 24h (6h
