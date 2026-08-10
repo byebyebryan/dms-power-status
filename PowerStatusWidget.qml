@@ -403,18 +403,22 @@ echo "AC=$ac"`;
     }
 
     // ── Usage stats ──
-    // Discharge stats are session-based: they count from the last unplug
-    // (transition out of the plugged states) to now, split into active
-    // discharge (regular samples) and suspended/idle discharge (recording gaps,
-    // i.e. suspend/off time that still drains the battery). Watt/energy math
-    // applies only to active discharge; old samples saved without "w" are
-    // skipped for it. Battery stats (full capacity, charge limit, health) come
-    // from the held sysfs values.
+    // Session-based, from the last unplug transition to now. Consumption is
+    // split at recording gaps (suspend/off):
+    //   - Active: measured from regular samples — Wh from the power integral,
+    //     % from the battery-level drop across each continuous active run.
+    //   - Suspended: estimated, since no draw is logged during gaps — the
+    //     level drop across each gap, converted to Wh against design capacity.
+    // Since-unplug: starting % is the level at the unplug moment; starting
+    // capacity = start% × design capacity; elapsed = time since unplug.
+    // Old samples saved without "w" are skipped for the Wh math only. Battery
+    // stats (design capacity, charge limit, health) come from held sysfs values.
 
     readonly property var stats: computeStats()
 
     function computeStats() {
-        const t0 = Math.floor(Date.now() / 1000) - windowSeconds - 3600;
+        const now = Math.floor(Date.now() / 1000);
+        const t0 = now - windowSeconds - 3600;
         const pts = [];
         for (let i = 0; i < samples.length; i++) {
             if (samples[i].t >= t0)
@@ -433,14 +437,33 @@ echo "AC=$ac"`;
         if (startIdx < 0 && last && last.c === 0)
             startIdx = 0;
 
+        const designWh = _heldEnergyFullDesign;
+
+        // Since-unplug values. Starting % is the level at the unplug moment;
+        // starting capacity converts it against design capacity.
+        const startPct = startIdx >= 0 ? pts[startIdx].v : NaN;
+        const startT = startIdx >= 0 ? pts[startIdx].t : NaN;
+        const startWh = (designWh > 0 && !isNaN(startPct))
+            ? startPct / 100 * designWh : NaN;
+        const elapsedS = !isNaN(startT) ? now - startT : NaN;
+
+        // Consumption is split at recording gaps:
+        //   - active: measured, regular samples
+        //   - suspended: estimated from the level drop across each gap
         let activeS = 0;
+        let activeWh = 0;
+        let activePct = 0;
         let suspendedS = 0;
-        let dischargeWh = 0;
+        let suspendedPct = 0;
+        let suspendedWh = 0;
         let minW = Infinity;
         let maxW = -Infinity;
         let sumWt = 0;
         let sumDt = 0;
+
         if (startIdx >= 0) {
+            let runStart = null;
+            let lastActiveV = null;
             for (let i = startIdx + 1; i < pts.length; i++) {
                 const a = pts[i - 1];
                 const b = pts[i];
@@ -450,13 +473,25 @@ echo "AC=$ac"`;
                 if (dt <= 0)
                     continue;
                 if (dt > gapS) {
+                    // suspend gap: close the active run, estimate suspended drain
+                    if (runStart !== null) {
+                        activePct += Math.max(0, runStart - a.v);
+                        runStart = null;
+                    }
                     suspendedS += dt;
+                    const drop = Math.max(0, a.v - b.v);
+                    suspendedPct += drop;
+                    if (designWh > 0)
+                        suspendedWh += drop / 100 * designWh;
                     continue;
                 }
                 activeS += dt;
+                if (runStart === null)
+                    runStart = a.v;
+                lastActiveV = b.v;
                 const w = b.w;
                 if (typeof w === "number" && isFinite(w) && w >= 0) {
-                    dischargeWh += w * dt / 3600;
+                    activeWh += w * dt / 3600;
                     if (w < minW)
                         minW = w;
                     if (w > maxW)
@@ -465,11 +500,20 @@ echo "AC=$ac"`;
                     sumDt += dt;
                 }
             }
+            if (runStart !== null && lastActiveV !== null)
+                activePct += Math.max(0, runStart - lastActiveV);
         }
+
         return {
+            "startPct": startPct,
+            "startWh": startWh,
+            "elapsedSeconds": elapsedS,
             "activeSeconds": activeS,
+            "activeWh": activeWh,
+            "activePct": activePct,
             "suspendedSeconds": suspendedS,
-            "dischargeWh": dischargeWh,
+            "suspendedWh": suspendedWh,
+            "suspendedPct": suspendedPct,
             "minWatts": minW === Infinity ? NaN : minW,
             "avgWatts": sumDt > 0 ? sumWt / sumDt : NaN,
             "maxWatts": maxW === -Infinity ? NaN : maxW
@@ -495,6 +539,12 @@ echo "AC=$ac"`;
         if (v === undefined || v === null || isNaN(v) || v < 0)
             return "–";
         return v < 10 ? v.toFixed(1) + "W" : v.toFixed(0) + "W";
+    }
+
+    function formatPct(p) {
+        if (p === undefined || p === null || isNaN(p) || p < 0)
+            return "–";
+        return Math.round(p) + "%";
     }
 
     function formatHealth() {
@@ -1009,7 +1059,7 @@ echo "AC=$ac"`;
                         StatRow {
                             title: "Battery"
                             items: [
-                                { "label": "Capacity", "value": root.formatEnergyWh(root._heldEnergyFull) },
+                                { "label": "Design cap", "value": root.formatEnergyWh(root._heldEnergyFullDesign) },
                                 { "label": "Health", "value": root.formatHealth() },
                                 { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" }
                             ]
@@ -1019,19 +1069,39 @@ echo "AC=$ac"`;
                         StatRow {
                             title: "Since unplug"
                             items: [
-                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.dischargeWh) },
-                                { "label": "Discharge", "value": root.formatDuration(root.stats.activeSeconds) },
-                                { "label": "Suspended", "value": root.formatDuration(root.stats.suspendedSeconds) }
+                                { "label": "Start cap", "value": root.formatEnergyWh(root.stats.startWh) },
+                                { "label": "Start %", "value": root.formatPct(root.stats.startPct) },
+                                { "label": "Elapsed", "value": root.formatDuration(root.stats.elapsedSeconds) }
+                            ]
+                        }
+
+                        // active consumption (measured)
+                        StatRow {
+                            title: "Active"
+                            items: [
+                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.activeWh) },
+                                { "label": "Drop", "value": root.formatPct(root.stats.activePct) },
+                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) }
                             ]
                         }
 
                         // active discharge rate spread
                         StatRow {
-                            title: "Discharge rate"
+                            title: "Active rate"
                             items: [
                                 { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
                                 { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
                                 { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
+                            ]
+                        }
+
+                        // suspended consumption (estimated)
+                        StatRow {
+                            title: "Suspended"
+                            items: [
+                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.suspendedWh) },
+                                { "label": "Drop", "value": root.formatPct(root.stats.suspendedPct) },
+                                { "label": "Time", "value": root.formatDuration(root.stats.suspendedSeconds) }
                             ]
                         }
                     }
@@ -1041,7 +1111,7 @@ echo "AC=$ac"`;
     }
 
     popoutWidth: 680
-    popoutHeight: 500
+    popoutHeight: 570
 
     Component {
         id: horizontalPill

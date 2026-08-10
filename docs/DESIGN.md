@@ -22,9 +22,9 @@ a power-profile switcher. We deliberately kept our scope smaller (see Goals).
 - Keep the pill (percentage · watts · eta) as the differentiator.
 - Add a charge history chart as the popout content (replacing the reuse of the
   built-in battery popout).
-- Add a compact usage-stats section: battery stats (capacity, charge limit,
-  health) plus a session-based discharge breakdown (active vs suspended time,
-  energy drained, min/avg/max wattage since last unplug).
+- Add a compact usage-stats section: battery stats (design capacity, charge
+  limit, health), a since-unplug session summary, and measured active vs
+  estimated suspended consumption with a min/avg/max rate row.
 - Stay minimal. NOT in scope: power-profile switcher, voltage, charge-cycle
   history tiles.
 
@@ -109,25 +109,27 @@ two writers could lose a sample on read-modify-write — acceptable. A
 
 ## Usage stats
 
-Three labeled rows beneath the chart. Battery stats come straight from the held
-sysfs values; discharge stats are session-based (since the last unplug), not the
-whole 24h window.
+Five labeled rows beneath the chart. Battery stats come straight from the held
+sysfs values; session stats are computed from the persisted samples since the
+last unplug.
 
-- **Battery** — capacity (`energy_full`, Wh), health (capacity vs design, %),
-  charge limit (`charge_control_end_threshold`, %).
-- **Since unplug** — drained (energy consumed while actively discharging,
-  time-weighted `Σ w·dt / 3600` Wh), discharge time (active state-0 samples),
-  suspended time (recording gaps within the session — suspend/off time that
-  still drains the battery).
-- **Discharge rate** — min/avg/max wattage spread over active discharge; the
-  average is time-weighted.
+- **Battery** — design capacity (`energy_full_design`, Wh), health (current
+  capacity vs design, %), charge limit (`charge_control_end_threshold`, %).
+- **Since unplug** — starting capacity (`start % × design capacity`, Wh),
+  starting battery % at the unplug moment, and elapsed time since unplug.
+- **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
+  Wh), drop (battery-% loss summed across each continuous active run), and
+  active time. Min/avg/max rate in its own row.
+- **Suspended** — *estimated* consumption, since no draw is logged during
+  gaps: for each recording gap the level drop `start% − end%` is recorded and
+  summed; Wh is that drop converted against design capacity. Time is the gap
+  duration.
 
-"Discharge" always means active discharge (regular samples), so the rate and
-drained numbers reflect actual usage, not suspend drift. If there's no unplug in
-the window (was already discharging, or never), the session falls back to the
-window start or shows all dashes. Samples recorded before the `w` field existed
-are skipped for watt/energy math (time still counts), so upgrading never
-misreports.
+"Active" means regular discharge samples; "suspended" means recording gaps
+(suspend/off). If there's no unplug in the window (was already discharging, or
+never), the session falls back to the window start or shows all dashes. Samples
+recorded before the `w` field existed are skipped for the Wh math only (% and
+time still count), so upgrading never misreports.
 
 ## Trade-offs accepted
 

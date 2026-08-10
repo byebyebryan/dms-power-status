@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- Expand stats into five labeled rows: Battery (design capacity, health,
+  limit), Since unplug (start capacity/%, elapsed), Active (drained Wh, drop %,
+  time), Active rate (min/avg/max), and Suspended (estimated drained Wh, drop
+  %, time).
+- Active consumption is measured: Wh from the power integral, % from the
+  battery-level drop summed across continuous active runs.
+- Suspended consumption is estimated: the level drop across each recording
+  gap, converted to Wh against design capacity.
+- Session start captures starting capacity/percentage at the unplug moment.
+
 ## 0.4.3
 
 - Rework discharge rate tint: blend within the discharge hue (muted → full
