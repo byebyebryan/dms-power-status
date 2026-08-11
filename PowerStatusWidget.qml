@@ -426,11 +426,18 @@ echo "AC=$ac"`;
         }
 
         // Session start = last unplug transition (last time a plugged sample
-        // was followed by a discharging one). If we're discharging and no
-        // transition is in the window, the unplug predates it — use window start.
+        // was followed by a discharging one). A risen level across a recording
+        // gap (plug-in during suspend) also restarts the session at the wake
+        // sample — but only when we woke unplugged; waking plugged is treated
+        // as a normal plug (no reset). If we're discharging and no transition
+        // is in the window, the unplug predates it — use window start.
         let startIdx = -1;
         for (let i = 1; i < pts.length; i++) {
-            if (pts[i - 1].c !== 0 && pts[i].c === 0)
+            const p = pts[i - 1];
+            const c = pts[i];
+            if (p.c !== 0 && c.c === 0)
+                startIdx = i;
+            else if (p.c === 0 && c.c === 0 && c.t - p.t > gapS && c.v > p.v)
                 startIdx = i;
         }
         const last = pts.length > 0 ? pts[pts.length - 1] : null;
@@ -445,7 +452,6 @@ echo "AC=$ac"`;
         const startT = startIdx >= 0 ? pts[startIdx].t : NaN;
         const startWh = (designWh > 0 && !isNaN(startPct))
             ? startPct / 100 * designWh : NaN;
-        const elapsedS = !isNaN(startT) ? now - startT : NaN;
 
         // Consumption is split at recording gaps:
         //   - active: measured, regular samples
@@ -460,6 +466,10 @@ echo "AC=$ac"`;
         let maxW = -Infinity;
         let sumWt = 0;
         let sumDt = 0;
+        // Last sample timestamp within the session: when still discharging it
+        // tracks now; when we plugged back in it freezes at the plug moment so
+        // the since-unplug stats (incl. elapsed) survive plugging in.
+        let lastT = null;
 
         if (startIdx >= 0) {
             let runStart = null;
@@ -467,13 +477,17 @@ echo "AC=$ac"`;
             for (let i = startIdx + 1; i < pts.length; i++) {
                 const a = pts[i - 1];
                 const b = pts[i];
-                if (b.c !== 0)
+                if (b.c !== 0) {
+                    // plugged back in: session ends at the last discharge sample
+                    lastT = a.t;
                     break;
+                }
                 const dt = b.t - a.t;
                 if (dt <= 0)
                     continue;
                 if (dt > gapS) {
                     // suspend gap: close the active run, estimate suspended drain
+                    lastT = b.t;
                     if (runStart !== null) {
                         activePct += Math.max(0, runStart - a.v);
                         runStart = null;
@@ -486,6 +500,7 @@ echo "AC=$ac"`;
                     continue;
                 }
                 activeS += dt;
+                lastT = b.t;
                 if (runStart === null)
                     runStart = a.v;
                 lastActiveV = b.v;
@@ -503,6 +518,8 @@ echo "AC=$ac"`;
             if (runStart !== null && lastActiveV !== null)
                 activePct += Math.max(0, runStart - lastActiveV);
         }
+
+        const elapsedS = (startIdx >= 0 && lastT !== null) ? lastT - startT : NaN;
 
         return {
             "startPct": startPct,

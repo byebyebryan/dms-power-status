@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Freeze the since-unplug stats at the plug moment so a finished discharge run
+  survives plugging back in (elapsed no longer keeps growing while charging).
+- Handle plug-during-suspend: waking unplugged with a risen battery level is
+  treated as a fresh unplug at the wake sample; waking plugged keeps the frozen
+  pre-suspend session.
+
 ## 0.5.2
 
 - Restore the Active rate as a second, unlabeled row beneath Active (min/avg/

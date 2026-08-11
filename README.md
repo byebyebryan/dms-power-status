@@ -18,6 +18,8 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
 - Session stats since last unplug: starting capacity/%, elapsed time, plus
   estimated suspended consumption (Wh, %, time) and measured active
   consumption (drained Wh, battery drop, time) with a min/avg/max rate row.
+  Stats freeze at plug-in so a finished discharge run isn't lost, and a
+  plug-during-suspend is handled as a fresh unplug at wake.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Reads battery data directly from sysfs (like the zsh battery prompt); no DMS
   `BatteryService` dependency.

@@ -127,10 +127,23 @@ last unplug.
   rate, aligned under the Active values.
 
 "Active" means regular discharge samples; "suspended" means recording gaps
-(suspend/off). If there's no unplug in the window (was already discharging, or
-never), the session falls back to the window start or shows all dashes. Samples
-recorded before the `w` field existed are skipped for the Wh math only (% and
-time still count), so upgrading never misreports.
+(suspend/off). The session stats **freeze at the plug moment**: once you plug
+back in, the since-unplug numbers (including elapsed) keep their last discharge
+values rather than resetting or blanking, so the run isn't lost. If there's no
+unplug in the window (was already discharging, or never), the session falls
+back to the window start or shows all dashes. Samples recorded before the `w`
+field existed are skipped for the Wh math only (% and time still count), so
+upgrading never misreports.
+
+### Session start edge cases
+
+- **Unplug during suspend** is a normal boundary: the sample after the gap is
+  discharging following a plugged one, so the transition scan catches it.
+- **Plug during suspend, wake unplugged** (level rose across a gap): treated as
+  a fresh unplug at the wake sample — the risen charge sits outside the
+  session, so no suspended time/Wh is charged against it.
+- **Plug during suspend, wake plugged**: no reset; since we're plugged, the
+  session stats keep their frozen pre-suspend discharge values.
 
 ## Trade-offs accepted
 
