@@ -97,7 +97,9 @@ two writers could lose a sample on read-modify-write — acceptable. A
 
 - Canvas line, discharge in `Theme.primary`, charging in `Theme.success`,
   plugged-idle in `Theme.surfaceVariantText`, suspend gaps as dashed
-  connectors.
+  connectors. A single neutral underfill gradient is drawn beneath the line for
+  every state, so it never clashes with the green charging or blue discharge
+  lines. Lone samples between gaps render as dots rather than vanishing.
 - Discharge line is **rate-tinted**: each segment is blended within the
   discharge hue from a muted discharge color (low draw) to the full discharge
   color (high draw), normalized over the window's observed min→max discharge

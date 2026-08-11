@@ -139,6 +139,10 @@ PluginComponent {
             _prevCharging = _heldCharging;
             _prevPlugged = _heldPlugged;
             root._resetSmoothedRate();
+            root.sample(true);
+        } else if (samples.length === 0) {
+            // First confirmed read with no boundary: seed the sampler now so
+            // the chart isn't empty until the next 60s heartbeat.
             root.sample();
         }
         root.updateSmoothedRate();
@@ -222,12 +226,14 @@ echo "AC=$ac"`;
         return 2;
     }
 
-    function sample() {
+    function sample(force) {
         if (!_heldHasBattery)
             return;
         const t = Math.floor(Date.now() / 1000);
         const last = samples.length > 0 ? samples[samples.length - 1] : null;
-        if (last && t - last.t < 5)
+        // The 5s floor prevents heartbeat/boundary double-sampling, but a
+        // boundary sample must land immediately so the graph flips at once.
+        if (last && t - last.t < 5 && !force)
             return;
         samples = samples.concat([{
             "t": t,
@@ -727,9 +733,11 @@ echo "AC=$ac"`;
                 ctx.rect(padL, padT, cw, ch)
                 ctx.clip()
 
+                // Neutral underfill: one color for every state so it never
+                // clashes with the green charging line or blue discharge line.
                 const grad = ctx.createLinearGradient(0, padT, 0, padT + ch)
-                grad.addColorStop(0, Qt.rgba(chart.dischargeCol.r, chart.dischargeCol.g, chart.dischargeCol.b, 0.20))
-                grad.addColorStop(1, Qt.rgba(chart.dischargeCol.r, chart.dischargeCol.g, chart.dischargeCol.b, 0.0))
+                grad.addColorStop(0, Qt.rgba(Theme.surfaceVariantText.r, Theme.surfaceVariantText.g, Theme.surfaceVariantText.b, 0.18))
+                grad.addColorStop(1, Qt.rgba(Theme.surfaceVariantText.r, Theme.surfaceVariantText.g, Theme.surfaceVariantText.b, 0.0))
 
                 function tracePath(rp) {
                     ctx.moveTo(X(rp[0].t), Y(rp[0].v))
@@ -747,8 +755,18 @@ echo "AC=$ac"`;
 
                 for (let r = 0; r < runs.length; r++) {
                     const rp = runs[r]
-                    if (rp.length < 2)
+                    if (rp.length < 2) {
+                        // lone sample between gaps: draw a dot so a brief blip
+                        // stays visible instead of vanishing
+                        const p = rp[0]
+                        ctx.beginPath()
+                        ctx.arc(X(p.t), Y(p.v), chart.markerRadius * 0.8, 0, Math.PI * 2)
+                        ctx.fillStyle = p.c === 1 ? chart.chargeCol : (p.c === 0 && dwMax > 0
+                            ? chart.mixColor(chart.mutedDischargeCol, chart.dischargeCol, dischargeTint(p.w))
+                            : (p.c === 0 ? chart.dischargeCol : chart.idleCol))
+                        ctx.fill()
                         continue
+                    }
 
                     if (X(rp[rp.length - 1].t) - X(rp[0].t) >= 8) {
                         ctx.beginPath()

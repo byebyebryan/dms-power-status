@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+
+- Neutral chart underfill: a single muted gradient beneath the line for all
+  states (previously discharge-blue even under charging segments).
+- Boundary samples now bypass the 5s rate-limit so plug/unplug flips the graph
+  immediately instead of waiting up to a minute.
+- Seed a sample on the first confirmed battery read so the chart isn't empty
+  until the first 60s heartbeat.
+- Lone samples between gaps draw as dots instead of vanishing.
+
 ## 0.6.1
 
 - Suspended drained / design capacity show `–` instead of `0.0Wh` when the
