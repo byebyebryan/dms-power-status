@@ -129,11 +129,14 @@ last unplug.
 "Active" means regular discharge samples; "suspended" means recording gaps
 (suspend/off). The session stats **freeze at the plug moment**: once you plug
 back in, the since-unplug numbers (including elapsed) keep their last discharge
-values rather than resetting or blanking, so the run isn't lost. If there's no
-unplug in the window (was already discharging, or never), the session falls
-back to the window start or shows all dashes. Samples recorded before the `w`
-field existed are skipped for the Wh math only (% and time still count), so
-upgrading never misreports.
+values rather than resetting or blanking, so the run isn't lost. This was a
+deliberate choice over blanking to dashes — freezing preserves a finished
+discharge run for review, and the row's "since unplug" framing stays honest
+because elapsed no longer grows while charging. If there's no unplug in the
+window (was already discharging, or never), the session falls back to the
+window start or shows all dashes. Samples recorded before the `w` field existed
+are skipped for the Wh math only (% and time still count), so upgrading never
+misreports.
 
 ### Session start edge cases
 

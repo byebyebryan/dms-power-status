@@ -54,3 +54,61 @@ jobs:
               print(f"component path does not exist: {component}", file=sys.stderr)
               sys.exit(1)
           PY
+
+      - name: Sanity-check QML balance
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          src = pathlib.Path("PowerStatusWidget.qml").read_text()
+
+          # Strip // and /* */ comments, then single/double-quoted strings and
+          # template literals, then assert braces/parens/brackets are balanced.
+          def strip_strings(s):
+              out = []
+              i = 0
+              n = len(s)
+              while i < n:
+                  c = s[i]
+                  if c == "/" and i + 1 < n and s[i + 1] == "/":
+                      while i < n and s[i] != "\n":
+                          i += 1
+                      continue
+                  if c == "/" and i + 1 < n and s[i + 1] == "*":
+                      i += 2
+                      while i < n and not (s[i] == "*" and i + 1 < n and s[i + 1] == "/"):
+                          i += 1
+                      i += 2
+                      continue
+                  if c in "\"'`":
+                      quote = c
+                      i += 1
+                      while i < n:
+                          if s[i] == "\\":
+                              i += 2
+                              continue
+                          if s[i] == quote:
+                              i += 1
+                              break
+                          i += 1
+                      continue
+                  out.append(c)
+                  i += 1
+              return "".join(out)
+
+          code = strip_strings(src)
+          pairs = {")": "(", "]": "[", "}": "{"}
+          stack = []
+          for c in code:
+              if c in "([{":
+                  stack.append(c)
+              elif c in ")]}":
+                  if not stack or stack.pop() != pairs[c]:
+                      print(f"unbalanced '{c}'", file=sys.stderr)
+                      sys.exit(1)
+          if stack:
+              print(f"unclosed {stack[-1]}", file=sys.stderr)
+              sys.exit(1)
+          print("QML balance OK")
+          PY

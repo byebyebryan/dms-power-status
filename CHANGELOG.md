@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1
+
+- Suspended drained / design capacity show `–` instead of `0.0Wh` when the
+  firmware exposes no design capacity (can't convert % drop to Wh).
+- Risen-level gap detection now requires a >1% rise so `capacity` rounding
+  noise doesn't restart the session.
+- Refresh can't stall permanently if a read callback never fires (5s expiry).
+- Chart repaints on `nestedSurface` theme changes; removed dead `pid` property.
+- CI now sanity-checks QML brace/paren balance.
+
 ## 0.6.0
 
 - Freeze the since-unplug stats at the plug moment so a finished discharge run

@@ -20,13 +20,13 @@ PluginComponent {
     // Values are held (last-good) so a transient empty/0 read on plug/unplug
     // never blanks the pill — we keep the previous valid value instead.
 
-    readonly property string pid: "powerStatus"
     readonly property int windowSeconds: 24 * 3600
     readonly property int gapS: 1200
     readonly property string _refreshProcId: "powerStatus.refresh." + Math.random().toString(36).slice(2)
 
     property var samples: []
     property bool _reading: false
+    property int _readingStartedAt: 0
     property int _noBatteryStreak: 0
 
     function loadSamples() {
@@ -145,9 +145,15 @@ PluginComponent {
     }
 
     function refresh() {
-        if (_reading)
-            return;
+        // If a previous read's callback never fired, let it expire after a
+        // few seconds so refresh can't stall permanently.
+        if (_reading) {
+            if (Date.now() - _readingStartedAt < 5000)
+                return;
+            _reading = false;
+        }
         _reading = true;
+        _readingStartedAt = Date.now();
         const cmd = `
 ac=0
 found=0
@@ -429,15 +435,16 @@ echo "AC=$ac"`;
         // was followed by a discharging one). A risen level across a recording
         // gap (plug-in during suspend) also restarts the session at the wake
         // sample — but only when we woke unplugged; waking plugged is treated
-        // as a normal plug (no reset). If we're discharging and no transition
-        // is in the window, the unplug predates it — use window start.
+        // as a normal plug (no reset). A +1% margin avoids treating rounding
+        // noise on `capacity` as a charge event. If we're discharging and no
+        // transition is in the window, the unplug predates it — use window start.
         let startIdx = -1;
         for (let i = 1; i < pts.length; i++) {
             const p = pts[i - 1];
             const c = pts[i];
             if (p.c !== 0 && c.c === 0)
                 startIdx = i;
-            else if (p.c === 0 && c.c === 0 && c.t - p.t > gapS && c.v > p.v)
+            else if (p.c === 0 && c.c === 0 && c.t - p.t > gapS && c.v > p.v + 1)
                 startIdx = i;
         }
         const last = pts.length > 0 ? pts[pts.length - 1] : null;
@@ -461,7 +468,9 @@ echo "AC=$ac"`;
         let activePct = 0;
         let suspendedS = 0;
         let suspendedPct = 0;
-        let suspendedWh = 0;
+        // suspendedWh needs design capacity to convert the % drop; without it we
+        // can't compute a Wh figure, so leave NaN (renders "–") rather than 0.
+        let suspendedWh = designWh > 0 ? 0 : NaN;
         let minW = Infinity;
         let maxW = -Infinity;
         let sumWt = 0;
@@ -838,6 +847,7 @@ echo "AC=$ac"`;
             target: Theme
             function onPrimaryChanged() { canvas.requestPaint() }
             function onSuccessChanged() { canvas.requestPaint() }
+            function onNestedSurfaceChanged() { canvas.requestPaint() }
             function onIsLightModeChanged() { canvas.requestPaint() }
         }
 
@@ -1076,7 +1086,7 @@ echo "AC=$ac"`;
                         StatRow {
                             title: "Battery"
                             items: [
-                                { "label": "Design cap", "value": root.formatEnergyWh(root._heldEnergyFullDesign) },
+                                { "label": "Design cap", "value": root._heldEnergyFullDesign > 0 ? root.formatEnergyWh(root._heldEnergyFullDesign) : "–" },
                                 { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
                                 { "label": "Health", "value": root.formatHealth() }
                             ]
