@@ -1156,7 +1156,7 @@ echo "AC=$ac"`;
     }
 
     popoutWidth: 680
-    popoutHeight: 570
+    popoutHeight: 600
 
     Component {
         id: horizontalPill

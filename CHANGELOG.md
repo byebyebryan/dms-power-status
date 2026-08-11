@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+- Raise popout height to 600px so the five stat rows don't clip on the graph
+  card.
+
 ## 0.6.2
 
 - Neutral chart underfill: a single muted gradient beneath the line for all
