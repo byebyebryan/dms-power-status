@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1
+
+- Remove the pill hover tooltip because its popup fought the bar's hover/reveal
+  lifecycle and flickered; retain the descriptive accessibility metadata.
+
 ## 0.8.0
 
 - Reframe the popout around battery state with clearer charging, on-battery,

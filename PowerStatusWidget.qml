@@ -466,14 +466,14 @@ done`;
         // Keep plugged-idle neutral, matching the chart's Plugged in series.
         return Theme.surfaceVariantText;
     }
-    readonly property string pillTooltip: {
+    readonly property string pillDescription: {
         if (!hasBattery)
             return "No battery detected";
         const state = isCharging ? "charging" : (isPluggedIn ? "plugged in" : "on battery");
         const limit = _heldLimit > 0 && _heldLimit < 100 ? `, charge limit ${_heldLimit}%` : "";
         return `Battery ${batteryPercent}%, ${state}${limit}`;
     }
-    readonly property string pillAccessibleName: pillTooltip
+    readonly property string pillAccessibleName: pillDescription
     readonly property int textSize: Theme.barTextSize(barThickness,
         barConfig ? barConfig.fontScale : undefined,
         barConfig ? barConfig.maximizeWidgetText : undefined)
@@ -1266,7 +1266,7 @@ done`;
 
             spacing: Theme.spacingXS
             Accessible.name: root.pillAccessibleName
-            Accessible.description: root.pillTooltip
+            Accessible.description: root.pillDescription
             Accessible.role: Accessible.StaticText
 
             DankIcon {
@@ -1435,30 +1435,6 @@ done`;
                 }
             }
 
-            // BasePill owns the click handler. HoverHandler keeps the
-            // standard delayed tooltip independent of that click path.
-            HoverHandler {
-                id: horizontalPillHover
-                onHoveredChanged: {
-                    if (hovered)
-                        horizontalPillTooltipDelay.restart();
-                    else {
-                        horizontalPillTooltipDelay.stop();
-                        horizontalPillTooltip.hide();
-                    }
-                }
-            }
-
-            Timer {
-                id: horizontalPillTooltipDelay
-                interval: 400
-                repeat: false
-                onTriggered: horizontalPillTooltip.show(root.pillTooltip, powerRow, 0, 0, "bottom")
-            }
-
-            DankTooltipV2 {
-                id: horizontalPillTooltip
-            }
         }
     }
 
@@ -1469,7 +1445,7 @@ done`;
             id: verticalContent
             spacing: 1
             Accessible.name: root.pillAccessibleName
-            Accessible.description: root.pillTooltip
+            Accessible.description: root.pillDescription
             Accessible.role: Accessible.StaticText
 
             DankIcon {
@@ -1526,28 +1502,6 @@ done`;
                 }
             }
 
-            HoverHandler {
-                id: verticalPillHover
-                onHoveredChanged: {
-                    if (hovered)
-                        verticalPillTooltipDelay.restart();
-                    else {
-                        verticalPillTooltipDelay.stop();
-                        verticalPillTooltip.hide();
-                    }
-                }
-            }
-
-            Timer {
-                id: verticalPillTooltipDelay
-                interval: 400
-                repeat: false
-                onTriggered: verticalPillTooltip.show(root.pillTooltip, verticalContent, 0, 0, "right")
-            }
-
-            DankTooltipV2 {
-                id: verticalPillTooltip
-            }
         }
     }
 }

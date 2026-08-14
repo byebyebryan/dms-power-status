@@ -21,8 +21,8 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
   guidance instead of unavailable-value grids. Stats freeze at plug-in so a
   finished session isn't lost, and a plug-during-sleep gap is handled as a
   fresh unplug at wake.
-- Dynamic pill tooltip and descriptive accessibility metadata, plus a
-  short-screen scrollbar in the popout.
+- Descriptive pill accessibility metadata and a short-screen scrollbar in the
+  popout.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Supports both `energy_*` (µWh) and `charge_*` (µAh) batteries, converting
   charge values with `voltage_now`; multiple system batteries are aggregated.
