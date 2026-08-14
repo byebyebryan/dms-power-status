@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+- Reframe the popout around battery state with clearer charging, on-battery,
+  plugged-in, sleep-gap, capacity, and session terminology.
+- Replace unavailable session grids with state-aware collecting and empty
+  messages, while distinguishing current sessions from completed sessions.
+- Align pill, status, and chart color/icon semantics for charging, on-battery,
+  plugged-idle, and low-battery states.
+- Add 24-hour chart context, an integrated short-screen scrollbar, dynamic pill
+  tooltips, and descriptive accessibility metadata.
+
 ## 0.7.0
 
 - Aggregate usable system batteries, support both ENERGY_* and CHARGE_* sysfs

@@ -452,18 +452,28 @@ done`;
         return formatEta();
     }
     readonly property string percentText: hasBattery ? `${batteryPercent}%` : ""
+    readonly property bool isOnBattery: hasBattery && !isPluggedIn
     readonly property color statusColor: {
         if (!hasBattery) {
             return Theme.widgetIconColor;
         }
-        if (batteryPercent <= SettingsData.batteryLowThreshold && !isCharging && !isPluggedIn) {
-            return Theme.error;
+        if (isCharging) {
+            return Theme.success;
         }
-        if (isCharging || isPluggedIn) {
-            return Theme.primary;
+        if (isOnBattery) {
+            return batteryPercent <= SettingsData.batteryLowThreshold ? Theme.error : Theme.primary;
         }
-        return Theme.widgetIconColor;
+        // Keep plugged-idle neutral, matching the chart's Plugged in series.
+        return Theme.surfaceVariantText;
     }
+    readonly property string pillTooltip: {
+        if (!hasBattery)
+            return "No battery detected";
+        const state = isCharging ? "charging" : (isPluggedIn ? "plugged in" : "on battery");
+        const limit = _heldLimit > 0 && _heldLimit < 100 ? `, charge limit ${_heldLimit}%` : "";
+        return `Battery ${batteryPercent}%, ${state}${limit}`;
+    }
+    readonly property string pillAccessibleName: pillTooltip
     readonly property int textSize: Theme.barTextSize(barThickness,
         barConfig ? barConfig.fontScale : undefined,
         barConfig ? barConfig.maximizeWidgetText : undefined)
@@ -515,10 +525,11 @@ done`;
         return `${hours}:${minutes.toString().padStart(2, "0")}`;
     }
 
-    // Mirrors DMS getBatteryIcon (level + plugged/charging -> Material symbol).
+    // Use charging glyphs only while current is flowing into the battery;
+    // plugged-idle remains a normal battery glyph with neutral status color.
     function powerIconName() {
         const level = batteryPercent;
-        if (isCharging || isPluggedIn) {
+        if (isCharging) {
             if (level >= 90) return "battery_charging_full";
             if (level >= 80) return "battery_charging_90";
             if (level >= 60) return "battery_charging_80";
@@ -542,16 +553,16 @@ done`;
         if (isCharging)
             return "Charging";
         if (isPluggedIn)
-            return "Plugged In";
-        return "Discharging";
+            return "Plugged in";
+        return "On battery";
     }
 
     // ── Usage stats ──
     // Session-based, from the last unplug transition to now. Consumption is
     // split at recording gaps (suspend/off):
-    //   - Active: measured from regular samples — Wh from the power integral,
+    //   - While awake: measured from regular samples — Wh from the power integral,
     //     % from the battery-level drop across each continuous active run.
-    //   - Suspended: estimated, since no draw is logged during gaps — the
+    //   - While asleep: estimated, since no draw is logged during gaps — the
     //     level drop across each gap, converted to Wh against current full
     //     capacity. Design capacity is used only for health.
     // Since-unplug: starting % is the level at the unplug moment; starting
@@ -560,6 +571,13 @@ done`;
     // without "w" are never integrated across newer samples.
 
     readonly property var stats: computeStats()
+    readonly property bool sessionAvailable: stats && stats.sessionAvailable === true
+    readonly property string sessionTitle: isOnBattery ? "Current battery session" : "Last battery session"
+    readonly property string sessionEmptyTitle: isOnBattery
+        ? "Collecting battery-session data…" : "No recent on-battery session."
+    readonly property string sessionEmptyDetail: isOnBattery
+        ? "Usage details will appear as this session is recorded."
+        : "Usage details will appear after you unplug."
 
     function computeStats() {
         return Logic.computeStats(samples, Math.floor(Date.now() / 1000),
@@ -905,7 +923,9 @@ done`;
         required property string title
         required property var items
 
-        readonly property real titleWidth: 92
+        // Give section titles room to remain readable on normal popouts;
+        // child labels still elide gracefully at the compact minimum width.
+        readonly property real titleWidth: 112
 
         width: parent.width
         spacing: Theme.spacingM
@@ -948,7 +968,7 @@ done`;
 
     popoutContent: Component {
         PopoutComponent {
-            headerText: "Power"
+            headerText: "Battery"
 
             Column {
                 width: parent.width
@@ -988,7 +1008,7 @@ done`;
                         DankIcon {
                             name: "bolt"
                             size: Theme.iconSizeLarge
-                            color: Theme.primary
+                            color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -1009,7 +1029,7 @@ done`;
                         DankIcon {
                             name: "hourglass"
                             size: Theme.iconSizeLarge
-                            color: Theme.primary
+                            color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -1025,7 +1045,7 @@ done`;
                     StyledText {
                         text: root.statusText()
                         font.pixelSize: Theme.fontSizeMedium
-                        color: Theme.surfaceTextMedium
+                        color: root.statusColor
                         anchors.verticalCenter: parent.verticalCenter
                         visible: !root.showDynamicStatus
                     }
@@ -1034,7 +1054,7 @@ done`;
                 // The graph/stat card is intentionally scrollable. DMS binds
                 // PluginPopout's outer height to implicitHeight, so a fixed
                 // popoutHeight cannot protect short or scaled displays.
-                Flickable {
+                DankFlickable {
                     id: statsViewport
                     width: parent.width
                     readonly property real availableScreenHeight: root.parentScreen && root.parentScreen.height > 0
@@ -1047,7 +1067,6 @@ done`;
                     contentHeight: graphCard.implicitHeight
                     clip: true
                     interactive: contentHeight > height
-                    boundsBehavior: Flickable.StopAtBounds
 
                     StyledRect {
                         id: graphCard
@@ -1072,9 +1091,9 @@ done`;
                             Repeater {
                                 model: [
                                     { "label": "Charging", "color": Theme.success, "dashed": false },
-                                    { "label": "Discharging", "color": Theme.primary, "dashed": false },
-                                    { "label": "Plugged", "color": Theme.surfaceVariantText, "dashed": false },
-                                    { "label": "Suspend", "color": Theme.surfaceVariantText, "dashed": true }
+                                    { "label": "On battery", "color": Theme.primary, "dashed": false },
+                                    { "label": "Plugged in", "color": Theme.surfaceVariantText, "dashed": false },
+                                    { "label": "Sleep gap", "color": Theme.surfaceVariantText, "dashed": true }
                                 ]
 
                                 delegate: Row {
@@ -1122,6 +1141,12 @@ done`;
                             }
                         }
 
+                        StyledText {
+                            text: "Last 24 hours"
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: Theme.surfaceVariantText
+                        }
+
                         BatteryChart {
                             width: parent.width
                             height: 240
@@ -1138,50 +1163,90 @@ done`;
                         StatRow {
                             title: "Battery"
                             items: [
-                                { "label": "Design cap", "value": root._heldEnergyFullDesign > 0 ? root.formatEnergyWh(root._heldEnergyFullDesign) : "–" },
-                                { "label": "Limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
+                                { "label": "Design capacity", "value": root._heldEnergyFullDesign > 0 ? root.formatEnergyWh(root._heldEnergyFullDesign) : "–" },
+                                { "label": "Charge limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
                                 { "label": "Health", "value": root.formatHealth() }
                             ]
                         }
 
-                        // discharge session (since last unplug)
-                        StatRow {
-                            title: "Since unplug"
-                            items: [
-                                { "label": "Start cap", "value": root.formatEnergyWh(root.stats.startWh) },
-                                { "label": "Start %", "value": root.formatPct(root.stats.startPct) },
-                                { "label": "Elapsed", "value": root.formatDuration(root.stats.elapsedSeconds) }
-                            ]
+                        // Session rows only appear when the history has a
+                        // conservative watt-coverage path. This keeps a
+                        // plugged-in fresh install from rendering a grid of
+                        // unavailable values.
+                        Column {
+                            id: sessionStats
+                            width: parent.width
+                            visible: root.sessionAvailable
+                            height: visible ? implicitHeight : 0
+                            spacing: Theme.spacingS
+
+                            StyledText {
+                                text: root.sessionTitle
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Bold
+                                color: Theme.surfaceText
+                            }
+
+                            StatRow {
+                                title: ""
+                                items: [
+                                    { "label": "Starting energy", "value": root.formatEnergyWh(root.stats.startWh) },
+                                    { "label": "Starting charge", "value": root.formatPct(root.stats.startPct) },
+                                    { "label": "Duration", "value": root.formatDuration(root.stats.elapsedSeconds) }
+                                ]
+                            }
+
+                            StatRow {
+                                title: "While asleep"
+                                items: [
+                                    { "label": "Estimated use", "value": root.formatEnergyWh(root.stats.suspendedWh) },
+                                    { "label": "Battery drop", "value": root.formatPct(root.stats.suspendedPct) },
+                                    { "label": "Duration", "value": root.formatDuration(root.stats.suspendedSeconds) }
+                                ]
+                            }
+
+                            StatRow {
+                                title: "While awake"
+                                items: [
+                                    { "label": "Energy used", "value": root.formatEnergyWh(root.stats.activeWh) },
+                                    { "label": "Battery drop", "value": root.formatPct(root.stats.activePct) },
+                                    { "label": "Duration", "value": root.formatDuration(root.stats.activeSeconds) }
+                                ]
+                            }
+
+                            StatRow {
+                                title: "Power draw"
+                                items: [
+                                    { "label": "Low", "value": root.formatWatt(root.stats.minWatts) },
+                                    { "label": "Average", "value": root.formatWatt(root.stats.avgWatts) },
+                                    { "label": "High", "value": root.formatWatt(root.stats.maxWatts) }
+                                ]
+                            }
                         }
 
-                        // suspended consumption (estimated)
-                        StatRow {
-                            title: "Suspended"
-                            items: [
-                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.suspendedWh) },
-                                { "label": "Drop", "value": root.formatPct(root.stats.suspendedPct) },
-                                { "label": "Time", "value": root.formatDuration(root.stats.suspendedSeconds) }
-                            ]
-                        }
+                        Column {
+                            id: sessionEmpty
+                            width: parent.width
+                            visible: !root.sessionAvailable
+                            height: visible ? implicitHeight : 0
+                            spacing: Theme.spacingXS
 
-                        // active consumption (measured)
-                        StatRow {
-                            title: "Active"
-                            items: [
-                                { "label": "Drained", "value": root.formatEnergyWh(root.stats.activeWh) },
-                                { "label": "Drop", "value": root.formatPct(root.stats.activePct) },
-                                { "label": "Time", "value": root.formatDuration(root.stats.activeSeconds) }
-                            ]
-                        }
+                            StyledText {
+                                text: root.sessionEmptyTitle
+                                font.pixelSize: Theme.fontSizeMedium
+                                font.weight: Font.Bold
+                                color: Theme.surfaceText
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                            }
 
-                        // active discharge rate spread (no header, aligns under Active)
-                        StatRow {
-                            title: ""
-                            items: [
-                                { "label": "Min", "value": root.formatWatt(root.stats.minWatts) },
-                                { "label": "Avg", "value": root.formatWatt(root.stats.avgWatts) },
-                                { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
-                            ]
+                            StyledText {
+                                text: root.sessionEmptyDetail
+                                font.pixelSize: Theme.fontSizeSmall
+                                color: Theme.surfaceVariantText
+                                wrapMode: Text.WordWrap
+                                width: parent.width
+                            }
                         }
                         }
                     }
@@ -1200,6 +1265,9 @@ done`;
             id: powerRow
 
             spacing: Theme.spacingXS
+            Accessible.name: root.pillAccessibleName
+            Accessible.description: root.pillTooltip
+            Accessible.role: Accessible.StaticText
 
             DankIcon {
                 name: root.powerIconName()
@@ -1293,7 +1361,7 @@ done`;
                             anchors.fill: parent
                             text: root.percentText
                             font.pixelSize: root.textSize
-                            color: Theme.widgetTextColor
+                            color: root.statusColor
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             wrapMode: Text.NoWrap
@@ -1309,7 +1377,7 @@ done`;
                         DankIcon {
                             name: "bolt"
                             size: textBox.subIconSize
-                            color: Theme.primary
+                            color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -1341,7 +1409,7 @@ done`;
                         DankIcon {
                             name: "hourglass"
                             size: textBox.subIconSize
-                            color: Theme.primary
+                            color: root.statusColor
                             anchors.verticalCenter: parent.verticalCenter
                         }
 
@@ -1366,6 +1434,31 @@ done`;
                     }
                 }
             }
+
+            // BasePill owns the click handler. HoverHandler keeps the
+            // standard delayed tooltip independent of that click path.
+            HoverHandler {
+                id: horizontalPillHover
+                onHoveredChanged: {
+                    if (hovered)
+                        horizontalPillTooltipDelay.restart();
+                    else {
+                        horizontalPillTooltipDelay.stop();
+                        horizontalPillTooltip.hide();
+                    }
+                }
+            }
+
+            Timer {
+                id: horizontalPillTooltipDelay
+                interval: 400
+                repeat: false
+                onTriggered: horizontalPillTooltip.show(root.pillTooltip, powerRow, 0, 0, "bottom")
+            }
+
+            DankTooltipV2 {
+                id: horizontalPillTooltip
+            }
         }
     }
 
@@ -1373,7 +1466,11 @@ done`;
         id: verticalPill
 
         Column {
+            id: verticalContent
             spacing: 1
+            Accessible.name: root.pillAccessibleName
+            Accessible.description: root.pillTooltip
+            Accessible.role: Accessible.StaticText
 
             DankIcon {
                 name: root.powerIconName()
@@ -1385,7 +1482,7 @@ done`;
             StyledText {
                 text: root.percentText
                 font.pixelSize: root.textSize
-                color: Theme.widgetTextColor
+                color: root.statusColor
                 anchors.horizontalCenter: parent.horizontalCenter
             }
 
@@ -1397,7 +1494,7 @@ done`;
                 DankIcon {
                     name: "bolt"
                     size: root.textSize
-                    color: Theme.primary
+                    color: root.statusColor
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
@@ -1417,7 +1514,7 @@ done`;
                 DankIcon {
                     name: "hourglass"
                     size: root.textSize
-                    color: Theme.primary
+                    color: root.statusColor
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
@@ -1427,6 +1524,29 @@ done`;
                     color: Theme.surfaceVariantText
                     anchors.verticalCenter: parent.verticalCenter
                 }
+            }
+
+            HoverHandler {
+                id: verticalPillHover
+                onHoveredChanged: {
+                    if (hovered)
+                        verticalPillTooltipDelay.restart();
+                    else {
+                        verticalPillTooltipDelay.stop();
+                        verticalPillTooltip.hide();
+                    }
+                }
+            }
+
+            Timer {
+                id: verticalPillTooltipDelay
+                interval: 400
+                repeat: false
+                onTriggered: verticalPillTooltip.show(root.pillTooltip, verticalContent, 0, 0, "right")
+            }
+
+            DankTooltipV2 {
+                id: verticalPillTooltip
             }
         }
     }
