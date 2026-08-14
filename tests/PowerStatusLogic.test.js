@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const logic = require("../PowerStatusLogic.js");
+const logic = require("../powerStatusLogic.js");
 
 function approx(actual, expected, epsilon = 1e-9) {
     assert.ok(Math.abs(actual - expected) <= epsilon,
