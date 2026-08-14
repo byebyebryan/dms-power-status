@@ -91,6 +91,11 @@ dms ipc widget list | rg 'powerStatus|battery'
 journalctl --user -u dms.service --since '1 minute ago' --no-pager
 ```
 
+The regression command compiles the exact `power_status_logic.js` production
+source in a Node VM after removing only its QML `.pragma library` directive;
+there is intentionally no direct `node --check` command for that QML pragma
+file.
+
 Standalone `qmllint`/`qmlscene` need the DMS import path and module versions to
 be configured; on an unconfigured host they may exit non-zero (or report
 `Library import requires a version`) before loading the component. The CI

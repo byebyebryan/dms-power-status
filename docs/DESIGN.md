@@ -108,6 +108,13 @@ is destroyed, another instance claims the lease after 7s (or immediately when
 the old instance releases it). The persisted file remains the one plugin state
 key, but only the leader writes it.
 
+`power_status_logic.js` is marked `.pragma library`. QML's shared-library
+semantics are required here: every bar/screen imports the same stateless
+power-domain functions, and DMS cache-busted hot reloads must not create a
+context-bound script that fails when the parent component is reloaded. The
+Node regression harness compiles the exact production file in a VM after
+removing only that QML pragma, so the same source remains the syntax gate.
+
 On DMS 1.5.3, `PluginService` has a first-write bug after a plugin reload: it
 attempts to connect a signal on a boolean `FileView.loaded` property. The
 leader primes the state writer and repeats the identical write once after

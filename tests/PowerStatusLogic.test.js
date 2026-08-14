@@ -1,7 +1,30 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const logic = require("../power_status_logic.js");
+const vm = require("node:vm");
+
+// Compile the exact QML production resource. Node does not understand
+// `.pragma library`, so remove only that one directive in the VM copy; all
+// production code remains byte-for-byte identical and is still syntax-checked.
+const logicPath = path.join(__dirname, "..", "power_status_logic.js");
+const productionSource = fs.readFileSync(logicPath, "utf8");
+const sourceLines = productionSource.split(/\r?\n/);
+const pragmaLine = sourceLines.findIndex(line => line === ".pragma library");
+assert.notEqual(pragmaLine, -1, "production module must declare .pragma library");
+assert.equal(
+    sourceLines.filter(line => line === ".pragma library").length,
+    1,
+    "production module must contain exactly one library pragma"
+);
+const nodeSource = sourceLines.slice(0, pragmaLine)
+    .concat(sourceLines.slice(pragmaLine + 1)).join("\n");
+const productionModule = { exports: {} };
+vm.runInNewContext(nodeSource, {
+    module: productionModule,
+    exports: productionModule.exports,
+    console
+}, { filename: logicPath });
+const logic = productionModule.exports;
 
 function approx(actual, expected, epsilon = 1e-9) {
     assert.ok(Math.abs(actual - expected) <= epsilon,

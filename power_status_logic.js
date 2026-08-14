@@ -2,6 +2,8 @@
 // The QML component owns the sysfs command and timers; this module keeps the
 // unit conversion, state normalization, and session math deterministic.
 
+.pragma library
+
 var GAP_SECONDS = 150;
 
 function finiteNumber(value) {
