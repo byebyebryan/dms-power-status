@@ -4,7 +4,7 @@ import qs.Common
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
-import "power_status_logic.js" as Logic
+import "power_status_logic_v2.js" as Logic
 
 PluginComponent {
     id: root
@@ -40,6 +40,7 @@ PluginComponent {
     property bool _leader: false
     property var _shared: null
     property bool _stateRetryUsed: false
+    property var _heldLastSession: null
 
     function newSharedState() {
         return {
@@ -47,6 +48,8 @@ PluginComponent {
             leaderToken: "",
             leaderBeat: 0,
             samples: [],
+            lastSession: null,
+            backfillAttempted: false,
             hasBattery: false,
             level: 0,
             state: "none",
@@ -83,11 +86,18 @@ PluginComponent {
             _shared.samples = kept;
     }
 
-    function saveSamples() {
+    function writeStateValues() {
+        if (!_leader || !pluginService || !pluginId || !_shared)
+            return;
+        pluginService.savePluginState(pluginId, "samples", _shared.samples);
+        pluginService.savePluginState(pluginId, "lastSession", _shared.lastSession || null);
+    }
+
+    function saveState() {
         if (!_leader || !pluginService || !pluginId || !_shared)
             return;
         pruneSamples();
-        pluginService.savePluginState(pluginId, "samples", _shared.samples);
+        writeStateValues();
         publishShared();
         scheduleStateRetry();
     }
@@ -103,7 +113,7 @@ PluginComponent {
         repeat: false
         onTriggered: {
             if (root._leader && root.pluginService && root.pluginId && root._shared)
-                root.pluginService.savePluginState(root.pluginId, "samples", root._shared.samples)
+                root.writeStateValues()
         }
     }
 
@@ -131,6 +141,7 @@ PluginComponent {
             return;
         _shared = state;
         samples = Array.isArray(state.samples) ? state.samples : [];
+        _heldLastSession = Logic.normalizeLastSession(state.lastSession);
         _heldHasBattery = state.hasBattery === true;
         _heldLevel = isFinite(Number(state.level)) ? Number(state.level) : 0;
         _heldCharging = state.state === "charging";
@@ -159,7 +170,12 @@ PluginComponent {
     function initializeShared(state) {
         if (state.initialized !== true) {
             const saved = pluginService.loadPluginState(pluginId, "samples", []);
+            const savedLastSession = pluginService.loadPluginState(pluginId, "lastSession", null);
             state.samples = Array.isArray(saved) ? saved : [];
+            state.lastSession = Logic.normalizeLastSession(savedLastSession);
+            // A malformed object is deliberately not backfilled from history;
+            // only an absent key may use the conservative confirmed-plug load.
+            state.backfillAttempted = savedLastSession !== null;
             state.initialized = true;
             state.noBatteryStreak = 0;
             pruneSamples();
@@ -197,8 +213,8 @@ PluginComponent {
             _stateRetryUsed = false;
             // Prime the debounced state writer for this leader epoch. On DMS
             // 1.5.3 the first call may emit the known FileView warning; the
-            // bounded retry in saveSamples() follows after that debounce.
-            saveSamples();
+            // bounded retry in saveState() follows after that debounce.
+            saveState();
             publishShared();
             refreshTimer.restart();
             root.refresh();
@@ -217,6 +233,32 @@ PluginComponent {
             state.leaderBeat = 0;
             pluginService.setGlobalVar(pluginId, _globalName, state);
         }
+    }
+
+    function finalizeCompletedSession(boundary) {
+        if (!_leader || !_shared || !boundary)
+            return false;
+        const computed = Logic.computeStats(_shared.samples, boundary.t,
+            windowSeconds, gapS, _heldEnergyFull);
+        const snapshot = Logic.snapshotFromStats(computed);
+        if (!snapshot || !Logic.shouldReplaceLastSession(_shared.lastSession, snapshot))
+            return false;
+        _shared.lastSession = snapshot;
+        _shared.backfillAttempted = true;
+        return true;
+    }
+
+    function backfillLastSessionIfConfirmedPlugged(nextCode) {
+        if (!_leader || !_shared || nextCode === 0 || _shared.backfillAttempted === true)
+            return false;
+        _shared.backfillAttempted = true;
+        const computed = Logic.computeStats(_shared.samples, Math.floor(Date.now() / 1000),
+            windowSeconds, gapS, _heldEnergyFull);
+        const snapshot = Logic.snapshotFromStats(computed);
+        if (!snapshot || !Logic.shouldReplaceLastSession(_shared.lastSession, snapshot))
+            return false;
+        _shared.lastSession = snapshot;
+        return true;
     }
 
     function parseOutput(out) {
@@ -249,14 +291,26 @@ PluginComponent {
         syncShared();
 
         const nextCode = aggregate.sampleCode;
+        const completedBoundary = previousCode === 0 && nextCode !== 0;
+        let boundary = null;
+        let sampleAppended = false;
         if (nextCode !== previousCode) {
             root._resetSmoothedRate();
-            root.sample(true);
+            boundary = root.sample(true, false);
+            sampleAppended = boundary !== null;
         } else if (samples.length === 0) {
-            root.sample(false);
+            sampleAppended = root.sample(false, false) !== null;
         }
+        let sessionStateChanged = false;
+        if (completedBoundary)
+            sessionStateChanged = root.finalizeCompletedSession(boundary);
+        else if (nextCode !== 0)
+            sessionStateChanged = root.backfillLastSessionIfConfirmedPlugged(nextCode);
         root.updateSmoothedRate();
-        publishShared();
+        if (sampleAppended || sessionStateChanged)
+            saveState();
+        else
+            publishShared();
     }
 
     function refresh() {
@@ -345,16 +399,23 @@ done`;
         return _shared ? Logic.sampleCodeForState(_shared.state) : 2;
     }
 
-    function sample(force) {
+    function sample(force, persist) {
         if (!_leader || !_heldHasBattery || !_shared)
-            return;
-        const t = Math.floor(Date.now() / 1000);
+            return null;
+        if (persist === undefined)
+            persist = true;
         const last = _shared.samples.length > 0 ? _shared.samples[_shared.samples.length - 1] : null;
+        const now = Math.floor(Date.now() / 1000);
+        const lastT = last ? Number(last.t) : NaN;
         // The 5s floor prevents heartbeat/boundary double-sampling, but a
         // boundary sample must land immediately so the graph flips at once.
-        if (last && t - last.t < 5 && !force)
-            return;
-        _shared.samples = _shared.samples.concat([{
+        if (last && now - lastT < 5 && !force)
+            return null;
+        // A state transition can be detected in the same wall-clock second as
+        // the previous heartbeat. Keep forced samples strictly monotonic so
+        // the zero-duration pair cannot hide a completed plug boundary.
+        const t = force && isFinite(lastT) ? Math.max(now, lastT + 1) : now;
+        const point = {
             "t": t,
             "v": _heldLevel,
             "c": sampleState(),
@@ -362,9 +423,12 @@ done`;
             // unavailable and is never integrated by the conservative stats
             // coverage policy.
             "w": isFinite(_heldWatts) && _heldWatts >= 0 ? _heldWatts : null
-        }]);
+        };
+        _shared.samples = _shared.samples.concat([point]);
         samples = _shared.samples;
-        saveSamples();
+        if (persist)
+            saveState();
+        return point;
     }
 
     Timer {
@@ -560,24 +624,41 @@ done`;
     // ── Usage stats ──
     // Session-based, from the last unplug transition to now. Consumption is
     // split at recording gaps (suspend/off):
-    //   - While awake: measured from regular samples — Wh from the power integral,
+    //   - Awake: measured from regular samples — Wh from the power integral,
     //     % from the battery-level drop across each continuous active run.
-    //   - While asleep: estimated, since no draw is logged during gaps — the
+    //   - Asleep: estimated, since no draw is logged during gaps — the
     //     level drop across each gap, converted to Wh against current full
     //     capacity. Design capacity is used only for health.
     // Since-unplug: starting % is the level at the unplug moment; starting
     // capacity = start% × current full capacity; elapsed = time since unplug.
-    // A session without watt coverage is unavailable. Legacy samples saved
-    // without "w" are never integrated across newer samples.
+    // Legacy samples saved without "w" remain useful for time/level/drop
+    // coverage, but never produce fabricated measured energy or power values.
 
     readonly property var stats: computeStats()
-    readonly property bool sessionAvailable: stats && stats.sessionAvailable === true
-    readonly property string sessionTitle: isOnBattery ? "Current battery session" : "Last battery session"
+    readonly property var displayedSession: {
+        return isOnBattery ? stats : _heldLastSession;
+    }
+    readonly property bool displayedSessionAvailable: displayedSession
+        && displayedSession.sessionAvailable === true
+        && displayedSession.hasIntervals === true
+    readonly property string sessionTitle: isOnBattery
+        ? "Current battery session" : "Last battery session"
     readonly property string sessionEmptyTitle: isOnBattery
         ? "Collecting battery-session data…" : "No recent on-battery session."
     readonly property string sessionEmptyDetail: isOnBattery
         ? "Usage details will appear as this session is recorded."
         : "Usage details will appear after you unplug."
+    readonly property string sessionMetadataText: {
+        if (isOnBattery || !displayedSession)
+            return "";
+        const start = formatPct(displayedSession.startPct);
+        const end = formatPct(displayedSession.endPct);
+        if (start === "–" || end === "–")
+            return "";
+        const ended = formatSessionEndedAt(displayedSession.endT);
+        return ended.length > 0
+            ? `${start} → ${end} · Ended ${ended}` : `${start} → ${end}`;
+    }
 
     function computeStats() {
         return Logic.computeStats(samples, Math.floor(Date.now() / 1000),
@@ -609,6 +690,16 @@ done`;
         if (p === undefined || p === null || isNaN(p) || p < 0)
             return "–";
         return Math.round(p) + "%";
+    }
+
+    function formatSessionEndedAt(timestamp) {
+        const seconds = Number(timestamp);
+        if (!isFinite(seconds) || seconds <= 0)
+            return "";
+        const date = new Date(seconds * 1000);
+        if (!isFinite(date.getTime()))
+            return "";
+        return Qt.formatDateTime(date, "MMM d, h:mm AP");
     }
 
     function formatHealth() {
@@ -915,17 +1006,22 @@ done`;
 
     // ── Stats ──
 
-    // One labeled stats row: a section title on the left and three
-    // label/value tiles spread across the remaining width.
+    // One stats row: an optional section title on the left and three
+    // label/value tiles spread across the remaining width. A follow-on row can
+    // reserve the title column so related metrics stay aligned under a section.
     component StatRow: Row {
         id: srow
 
         required property string title
         required property var items
+        property bool reserveTitleSpace: false
 
         // Give section titles room to remain readable on normal popouts;
-        // child labels still elide gracefully at the compact minimum width.
-        readonly property real titleWidth: 112
+        // standalone unlabeled rows use the full width.
+        readonly property bool hasTitle: title.length > 0
+        readonly property bool hasTitleColumn: hasTitle || reserveTitleSpace
+        readonly property real titleWidth: hasTitleColumn ? 112 : 0
+        readonly property int gapCount: Math.max(0, items.length - 1) + (hasTitleColumn ? 1 : 0)
 
         width: parent.width
         spacing: Theme.spacingM
@@ -933,6 +1029,7 @@ done`;
         StyledText {
             text: srow.title
             width: srow.titleWidth
+            visible: srow.hasTitleColumn
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
             elide: Text.ElideRight
@@ -944,7 +1041,7 @@ done`;
 
             delegate: Column {
                 spacing: 2
-                width: (srow.width - srow.titleWidth - srow.spacing * srow.items.length) / srow.items.length
+                width: (srow.width - srow.titleWidth - srow.spacing * srow.gapCount) / srow.items.length
 
                 StyledText {
                     text: modelData.label
@@ -976,6 +1073,7 @@ done`;
 
                 // status header: icon + value pairs
                 Row {
+                    id: statusHeader
                     width: parent.width
                     height: 44
                     spacing: Theme.spacingL
@@ -1051,41 +1149,27 @@ done`;
                     }
                 }
 
-                // The graph/stat card is intentionally scrollable. DMS binds
-                // PluginPopout's outer height to implicitHeight, so a fixed
-                // popoutHeight cannot protect short or scaled displays.
-                DankFlickable {
-                    id: statsViewport
+                StyledRect {
+                    id: dashboardCard
                     width: parent.width
-                    readonly property real availableScreenHeight: root.parentScreen && root.parentScreen.height > 0
-                        ? root.parentScreen.height : 800
-                    readonly property real viewportLimit: Math.max(180,
-                        Math.min(640, availableScreenHeight * 0.72))
-                    height: Math.min(graphCard.implicitHeight, viewportLimit)
-                    implicitHeight: height
-                    contentWidth: width
-                    contentHeight: graphCard.implicitHeight
-                    clip: true
-                    interactive: contentHeight > height
+                    implicitHeight: dashboardColumn.implicitHeight + Theme.spacingM * 2
+                    height: implicitHeight
+                    radius: Theme.cornerRadius
+                    color: Theme.nestedSurface
+                    border.color: Theme.outlineLight
+                    border.width: 1
 
-                    StyledRect {
-                        id: graphCard
-                        width: statsViewport.width
-                        implicitHeight: graphColumn.implicitHeight + Theme.spacingM * 2
-                        height: implicitHeight
-                        radius: Theme.cornerRadius
-                        color: Theme.nestedSurface
-                        border.color: Theme.outlineLight
-                        border.width: 1
+                    Column {
+                        id: dashboardColumn
+                        width: parent.width - Theme.spacingM * 2
+                        anchors.centerIn: parent
+                        spacing: Theme.spacingS
 
-                        Column {
-                            id: graphColumn
-                            width: parent.width - Theme.spacingM * 2
-                            anchors.centerIn: parent
-                            spacing: Theme.spacingS
-
-                        // legend
+                        // The chart and battery facts stay visible while the
+                        // session details below follow the power context.
                         Row {
+                            id: legendRow
+                            width: parent.width
                             spacing: Theme.spacingM
 
                             Repeater {
@@ -1093,7 +1177,7 @@ done`;
                                     { "label": "Charging", "color": Theme.success, "dashed": false },
                                     { "label": "On battery", "color": Theme.primary, "dashed": false },
                                     { "label": "Plugged in", "color": Theme.surfaceVariantText, "dashed": false },
-                                    { "label": "Sleep gap", "color": Theme.surfaceVariantText, "dashed": true }
+                                    { "label": "Asleep", "color": Theme.surfaceVariantText, "dashed": true }
                                 ]
 
                                 delegate: Row {
@@ -1142,6 +1226,7 @@ done`;
                         }
 
                         StyledText {
+                            id: historyLabel
                             text: "Last 24 hours"
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.surfaceVariantText
@@ -1153,15 +1238,9 @@ done`;
                             widget: root
                         }
 
-                        Rectangle {
-                            width: parent.width
-                            height: 1
-                            color: Theme.outlineLight
-                        }
-
-                        // battery stats
                         StatRow {
-                            title: "Battery"
+                            id: batteryFacts
+                            title: ""
                             items: [
                                 { "label": "Design capacity", "value": root._heldEnergyFullDesign > 0 ? root.formatEnergyWh(root._heldEnergyFullDesign) : "–" },
                                 { "label": "Charge limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
@@ -1169,85 +1248,144 @@ done`;
                             ]
                         }
 
-                        // Session rows only appear when the history has a
-                        // conservative watt-coverage path. This keeps a
-                        // plugged-in fresh install from rendering a grid of
-                        // unavailable values.
-                        Column {
-                            id: sessionStats
+                        Rectangle {
+                            id: dashboardDivider
                             width: parent.width
-                            visible: root.sessionAvailable
-                            height: visible ? implicitHeight : 0
-                            spacing: Theme.spacingS
-
-                            StyledText {
-                                text: root.sessionTitle
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Bold
-                                color: Theme.surfaceText
-                            }
-
-                            StatRow {
-                                title: ""
-                                items: [
-                                    { "label": "Starting energy", "value": root.formatEnergyWh(root.stats.startWh) },
-                                    { "label": "Starting charge", "value": root.formatPct(root.stats.startPct) },
-                                    { "label": "Duration", "value": root.formatDuration(root.stats.elapsedSeconds) }
-                                ]
-                            }
-
-                            StatRow {
-                                title: "While asleep"
-                                items: [
-                                    { "label": "Estimated use", "value": root.formatEnergyWh(root.stats.suspendedWh) },
-                                    { "label": "Battery drop", "value": root.formatPct(root.stats.suspendedPct) },
-                                    { "label": "Duration", "value": root.formatDuration(root.stats.suspendedSeconds) }
-                                ]
-                            }
-
-                            StatRow {
-                                title: "While awake"
-                                items: [
-                                    { "label": "Energy used", "value": root.formatEnergyWh(root.stats.activeWh) },
-                                    { "label": "Battery drop", "value": root.formatPct(root.stats.activePct) },
-                                    { "label": "Duration", "value": root.formatDuration(root.stats.activeSeconds) }
-                                ]
-                            }
-
-                            StatRow {
-                                title: "Power draw"
-                                items: [
-                                    { "label": "Low", "value": root.formatWatt(root.stats.minWatts) },
-                                    { "label": "Average", "value": root.formatWatt(root.stats.avgWatts) },
-                                    { "label": "High", "value": root.formatWatt(root.stats.maxWatts) }
-                                ]
-                            }
+                            height: 1
+                            color: Theme.outlineLight
                         }
 
-                        Column {
-                            id: sessionEmpty
+                        // Only the session details scroll. They remain part of
+                        // this single dashboard surface rather than becoming a
+                        // visually separate card.
+                        DankFlickable {
+                            id: sessionViewport
                             width: parent.width
-                            visible: !root.sessionAvailable
-                            height: visible ? implicitHeight : 0
-                            spacing: Theme.spacingXS
+                            readonly property real availableScreenHeight: root.parentScreen && root.parentScreen.height > 0
+                                ? root.parentScreen.height : 800
+                            readonly property real fixedContentHeight: 40 + statusHeader.height
+                                + Theme.spacingL + Theme.spacingM * 2 + Theme.spacingS * 2
+                                + legendRow.implicitHeight + historyLabel.implicitHeight
+                                + 240 + batteryFacts.implicitHeight + dashboardDivider.height
+                                + dashboardColumn.spacing * 5
+                            readonly property real viewportLimit: Math.max(120,
+                                Math.min(420, availableScreenHeight - fixedContentHeight))
+                            height: Math.min(sessionContent.implicitHeight, viewportLimit)
+                            implicitHeight: height
+                            contentWidth: width
+                            contentHeight: sessionContent.implicitHeight
+                            clip: true
+                            interactive: contentHeight > height
 
-                            StyledText {
-                                text: root.sessionEmptyTitle
-                                font.pixelSize: Theme.fontSizeMedium
-                                font.weight: Font.Bold
-                                color: Theme.surfaceText
-                                wrapMode: Text.WordWrap
-                                width: parent.width
-                            }
+                            Item {
+                                id: sessionContent
+                                width: sessionViewport.width
+                                implicitHeight: sessionColumn.implicitHeight
+                                height: implicitHeight
 
-                            StyledText {
-                                text: root.sessionEmptyDetail
-                                font.pixelSize: Theme.fontSizeSmall
-                                color: Theme.surfaceVariantText
-                                wrapMode: Text.WordWrap
-                                width: parent.width
+                                Column {
+                                    id: sessionColumn
+                                    width: parent.width
+                                    spacing: Theme.spacingS
+
+                                    Column {
+                                        id: sessionStats
+                                        width: parent.width
+                                        visible: root.displayedSessionAvailable
+                                        height: visible ? implicitHeight : 0
+                                        spacing: Theme.spacingS
+
+                                        StyledText {
+                                            text: root.sessionTitle
+                                            font.pixelSize: Theme.fontSizeMedium
+                                            font.weight: Font.Bold
+                                            color: Theme.surfaceText
+                                        }
+
+                                        StyledText {
+                                            visible: root.sessionMetadataText.length > 0
+                                            height: visible ? implicitHeight : 0
+                                            text: root.sessionMetadataText
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            color: Theme.surfaceVariantText
+                                        }
+
+                                        StatRow {
+                                            title: ""
+                                            items: [
+                                                { "label": "Starting energy", "value": root.formatEnergyWh(root.displayedSession ? root.displayedSession.startWh : NaN) },
+                                                { "label": "Starting charge", "value": root.formatPct(root.displayedSession ? root.displayedSession.startPct : NaN) },
+                                                { "label": "Duration", "value": root.formatDuration(root.displayedSession ? root.displayedSession.elapsedSeconds : NaN) }
+                                            ]
+                                        }
+
+                                        StatRow {
+                                            title: "Asleep"
+                                            items: [
+                                                { "label": "Estimated use", "value": root.formatEnergyWh(root.displayedSession ? root.displayedSession.suspendedWh : NaN) },
+                                                { "label": "Battery drop", "value": root.formatPct(root.displayedSession ? root.displayedSession.suspendedPct : NaN) },
+                                                { "label": "Duration", "value": root.formatDuration(root.displayedSession ? root.displayedSession.suspendedSeconds : NaN) }
+                                            ]
+                                        }
+
+                                        StatRow {
+                                            title: "Awake"
+                                            items: [
+                                                { "label": "Energy used", "value": root.formatEnergyWh(root.displayedSession ? root.displayedSession.activeWh : NaN) },
+                                                { "label": "Battery drop", "value": root.formatPct(root.displayedSession ? root.displayedSession.activePct : NaN) },
+                                                { "label": "Duration", "value": root.formatDuration(root.displayedSession ? root.displayedSession.activeSeconds : NaN) }
+                                            ]
+                                        }
+
+                                        StyledText {
+                                            width: parent.width
+                                            visible: root.displayedSession && root.displayedSession.wattCoverageComplete !== true
+                                            height: visible ? implicitHeight : 0
+                                            text: "Awake power data is incomplete for this session."
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            color: Theme.surfaceVariantText
+                                            wrapMode: Text.WordWrap
+                                        }
+
+                                        StatRow {
+                                            title: ""
+                                            reserveTitleSpace: true
+                                            visible: root.displayedSession && root.displayedSession.wattCoverageComplete === true
+                                            height: visible ? implicitHeight : 0
+                                            items: [
+                                                { "label": "Low draw", "value": root.formatWatt(root.displayedSession ? root.displayedSession.minWatts : NaN) },
+                                                { "label": "Average draw", "value": root.formatWatt(root.displayedSession ? root.displayedSession.avgWatts : NaN) },
+                                                { "label": "High draw", "value": root.formatWatt(root.displayedSession ? root.displayedSession.maxWatts : NaN) }
+                                            ]
+                                        }
+                                    }
+
+                                    Column {
+                                        id: sessionEmpty
+                                        width: parent.width
+                                        visible: !root.displayedSessionAvailable
+                                        height: visible ? implicitHeight : 0
+                                        spacing: Theme.spacingXS
+
+                                        StyledText {
+                                            text: root.sessionEmptyTitle
+                                            font.pixelSize: Theme.fontSizeMedium
+                                            font.weight: Font.Bold
+                                            color: Theme.surfaceText
+                                            wrapMode: Text.WordWrap
+                                            width: parent.width
+                                        }
+
+                                        StyledText {
+                                            text: root.sessionEmptyDetail
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            color: Theme.surfaceVariantText
+                                            wrapMode: Text.WordWrap
+                                            width: parent.width
+                                        }
+                                    }
+                                }
                             }
-                        }
                         }
                     }
                 }

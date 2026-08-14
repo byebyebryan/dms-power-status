@@ -1,10 +1,15 @@
 // Pure data and statistics helpers shared by the widget and the Node fixtures.
 // The QML component owns the sysfs command and timers; this module keeps the
 // unit conversion, state normalization, and session math deterministic.
+//
+// This is resource/cache generation v2. If an exported API or behavior changes,
+// bump the filename generation and update every QML, test, and documentation
+// reference so DMS hot reload cannot retain an older shared-library URL.
 
 .pragma library
 
 var GAP_SECONDS = 150;
+var SESSION_SNAPSHOT_SCHEMA = 1;
 
 function finiteNumber(value) {
     var number = typeof value === "number" ? value : Number(value);
@@ -313,7 +318,11 @@ function unavailableStats() {
         sessionAvailable: false,
         hasIntervals: false,
         wattCoverageComplete: false,
+        completedBoundary: false,
+        startT: NaN,
+        endT: NaN,
         startPct: NaN,
+        endPct: NaN,
         startWh: NaN,
         elapsedSeconds: NaN,
         activeSeconds: NaN,
@@ -359,7 +368,9 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
     var start = pts[startIdx];
     var result = unavailableStats();
     result.sessionAvailable = true;
+    result.startT = start.t;
     result.startPct = start.v;
+    result.endPct = start.v;
     result.startWh = isFinite(fullWh) ? start.v / 100 * fullWh : NaN;
 
     var activeS = 0;
@@ -403,6 +414,8 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
                 activeS += dt;
                 activeIntervals++;
                 endT = b.t;
+                result.completedBoundary = true;
+                result.endPct = b.v;
                 if (validWatt(a.w)) {
                     wattIntervals++;
                     sumWt += a.w * dt;
@@ -430,6 +443,8 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
                 suspendedS += dt;
                 suspendedIntervals++;
                 endT = b.t;
+                result.completedBoundary = true;
+                result.endPct = b.v;
                 var boundaryDrop = Math.max(0, a.v - b.v);
                 suspendedPct += boundaryDrop;
                 if (isFinite(fullWh))
@@ -446,6 +461,7 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
             suspendedS += dt;
             suspendedIntervals++;
             endT = b.t;
+            result.endPct = b.v;
             var drop = Math.max(0, a.v - b.v);
             suspendedPct += drop;
             if (isFinite(fullWh))
@@ -457,6 +473,7 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
         activeS += dt;
         activeIntervals++;
         endT = b.t;
+        result.endPct = b.v;
         if (!runHasInterval) {
             runStartV = a.v;
             runHasInterval = true;
@@ -483,13 +500,16 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
 
     if (runHasInterval && pts.length > startIdx + 1) {
         var finalPoint = pts[pts.length - 1];
-        if (finalPoint.c === 0)
+        if (finalPoint.c === 0) {
             closeActiveRun(finalPoint.v);
+            result.endPct = finalPoint.v;
+        }
     }
 
     result.hasIntervals = activeIntervals > 0 || suspendedIntervals > 0;
     result.wattCoverageComplete = wattComplete && wattIntervals > 0;
     result.elapsedSeconds = result.hasIntervals && isFinite(endT) ? Math.max(0, endT - start.t) : NaN;
+    result.endT = isFinite(endT) ? endT : NaN;
     result.activeSeconds = activeIntervals > 0 ? activeS : NaN;
     result.activePct = activeIntervals > 0 ? activePct : NaN;
     result.suspendedSeconds = suspendedIntervals > 0 ? suspendedS : NaN;
@@ -504,6 +524,131 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
     return result;
 }
 
+function jsonNumber(value) {
+    var number = finiteNumber(value);
+    return isFinite(number) ? number : null;
+}
+
+function snapshotFromStats(stats) {
+    if (!stats || stats.sessionAvailable !== true || stats.hasIntervals !== true
+            || stats.completedBoundary !== true)
+        return null;
+
+    var startT = finiteNumber(stats.startT);
+    var endT = finiteNumber(stats.endT);
+    var startPct = finiteNumber(stats.startPct);
+    var endPct = finiteNumber(stats.endPct);
+    var elapsed = finiteNumber(stats.elapsedSeconds);
+    if (!isFinite(startT) || !isFinite(endT) || endT < startT
+            || !isFinite(startPct) || startPct < 0 || startPct > 100
+            || !isFinite(endPct) || endPct < 0 || endPct > 100
+            || !isFinite(elapsed) || elapsed < 0)
+        return null;
+
+    return {
+        schema: SESSION_SNAPSHOT_SCHEMA,
+        sessionAvailable: true,
+        hasIntervals: true,
+        completedBoundary: true,
+        wattCoverageComplete: stats.wattCoverageComplete === true,
+        startT: startT,
+        endT: endT,
+        startPct: startPct,
+        endPct: endPct,
+        startWh: jsonNumber(stats.startWh),
+        elapsedSeconds: elapsed,
+        activeSeconds: jsonNumber(stats.activeSeconds),
+        activeWh: jsonNumber(stats.activeWh),
+        activePct: jsonNumber(stats.activePct),
+        suspendedSeconds: jsonNumber(stats.suspendedSeconds),
+        suspendedWh: jsonNumber(stats.suspendedWh),
+        suspendedPct: jsonNumber(stats.suspendedPct),
+        minWatts: jsonNumber(stats.minWatts),
+        avgWatts: jsonNumber(stats.avgWatts),
+        maxWatts: jsonNumber(stats.maxWatts)
+    };
+}
+
+function optionalSnapshotNumber(value, low, high) {
+    if (value === null || value === undefined)
+        return null;
+    var number = finiteNumber(value);
+    if (!isFinite(number) || (low !== undefined && number < low)
+            || (high !== undefined && number > high))
+        return NaN;
+    return number;
+}
+
+function normalizeLastSession(value) {
+    if (!value || typeof value !== "object"
+            || Number(value.schema) !== SESSION_SNAPSHOT_SCHEMA
+            || value.sessionAvailable !== true
+            || value.hasIntervals !== true
+            || value.completedBoundary !== true
+            || typeof value.wattCoverageComplete !== "boolean")
+        return null;
+
+    var startT = optionalSnapshotNumber(value.startT, 0);
+    var endT = optionalSnapshotNumber(value.endT, 0);
+    var startPct = optionalSnapshotNumber(value.startPct, 0, 100);
+    var endPct = optionalSnapshotNumber(value.endPct, 0, 100);
+    var elapsed = optionalSnapshotNumber(value.elapsedSeconds, 0);
+    if (startT === null || endT === null || startPct === null || endPct === null
+            || elapsed === null || !isFinite(startT) || !isFinite(endT) || endT < startT
+            || !isFinite(startPct) || !isFinite(endPct) || !isFinite(elapsed))
+        return null;
+    if (Math.abs(elapsed - (endT - startT)) > 1)
+        return null;
+
+    var fields = [
+        "startWh", "activeSeconds", "activeWh", "activePct",
+        "suspendedSeconds", "suspendedWh", "suspendedPct",
+        "minWatts", "avgWatts", "maxWatts"
+    ];
+    var normalized = {
+        schema: SESSION_SNAPSHOT_SCHEMA,
+        sessionAvailable: true,
+        hasIntervals: true,
+        completedBoundary: true,
+        wattCoverageComplete: value.wattCoverageComplete === true,
+        startT: startT,
+        endT: endT,
+        startPct: startPct,
+        endPct: endPct,
+        elapsedSeconds: elapsed
+    };
+    for (var i = 0; i < fields.length; i++) {
+        var field = fields[i];
+        var number = optionalSnapshotNumber(value[field], 0);
+        if (!isFinite(number) && number !== null)
+            return null;
+        if ((field === "activePct" || field === "suspendedPct")
+                && number !== null && number > 100)
+            return null;
+        normalized[field] = number;
+    }
+    if (normalized.wattCoverageComplete) {
+        if (normalized.activeWh === null || normalized.minWatts === null
+                || normalized.avgWatts === null || normalized.maxWatts === null
+                || !isFinite(normalized.activeWh)
+                || !isFinite(normalized.minWatts)
+                || !isFinite(normalized.avgWatts)
+                || !isFinite(normalized.maxWatts)
+                || normalized.minWatts > normalized.avgWatts
+                || normalized.avgWatts > normalized.maxWatts)
+            return null;
+    }
+    return normalized;
+}
+
+function shouldReplaceLastSession(existing, candidate) {
+    var next = normalizeLastSession(candidate);
+    if (!next)
+        return false;
+    var prior = normalizeLastSession(existing);
+    return !prior || next.endT > prior.endT;
+}
+
 function sampleCodeForState(state) {
     if (state === "charging" || state === 1)
         return 1;
@@ -514,6 +659,7 @@ function sampleCodeForState(state) {
 
 var api = {
     GAP_SECONDS: GAP_SECONDS,
+    SESSION_SNAPSHOT_SCHEMA: SESSION_SNAPSHOT_SCHEMA,
     convertChargeToEnergy: convertChargeToEnergy,
     convertCurrentToPower: convertCurrentToPower,
     parseDelimitedOutput: parseDelimitedOutput,
@@ -522,6 +668,9 @@ var api = {
     normalizeBattery: normalizeBattery,
     isUsableSource: isUsableSource,
     computeStats: computeStats,
+    snapshotFromStats: snapshotFromStats,
+    normalizeLastSession: normalizeLastSession,
+    shouldReplaceLastSession: shouldReplaceLastSession,
     sampleCodeForState: sampleCodeForState,
     validSample: validSample
 };

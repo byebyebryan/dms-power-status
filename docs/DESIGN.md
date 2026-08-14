@@ -1,6 +1,6 @@
 # Design: Charge history graph for DMS Power Status
 
-Status: implemented for plugin 0.7.0; validate against the installed DMS after
+Status: implemented for plugin 0.9.0; validate against the installed DMS after
 deployment because the widget deliberately uses DMS PluginService globals.
 
 ## Context
@@ -97,29 +97,43 @@ collection continues while the popout is closed.
 
 - 60s heartbeat sample → `{t, v, c, w}` (`c`: 0 discharging, 1 charging, 2
   plugged-idle) plus immediate samples on plug/charging boundaries.
-- 24h window; pruned on load/save. ~1440 entries, trivial size.
+- 24h window; pruned on load/save. ~1440 entries, trivial size. These samples
+  remain the sole source for the chart and the live current-session view.
+- A separate `lastSession` state key stores the latest completed session as a
+  schema-versioned, JSON-safe snapshot. It is finalized only at a confirmed
+  discharge-to-charging/plugged boundary, then retained until a newer valid
+  session completes. It is not pruned with the rolling samples.
+- Existing installs with only `samples` are migrated conservatively. A
+  one-time backfill is allowed only after a confirmed plugged read and an
+  unambiguous completed boundary is present in the retained samples; malformed
+  snapshots and ambiguous/current discharging histories are not guessed.
 
 Each DMS bar/screen creates a separate widget object. Runtime state is kept in
 the DMS `PluginService` global variable `powerStatus.shared`; a lease elects
 one leader to run the sysfs sampler, rate smoother, and whole-array state
-writer. Followers mirror the same samples and normalized fields, so two
-outputs cannot perform competing read-modify-write operations. If the leader
-is destroyed, another instance claims the lease after 7s (or immediately when
-the old instance releases it). The persisted file remains the one plugin state
-key, but only the leader writes it.
+writer. Followers mirror the same samples, snapshot, and normalized fields, so
+two outputs cannot perform competing read-modify-write operations. If the
+leader is destroyed, another instance claims the lease after 7s (or immediately
+when the old instance releases it). The persisted file contains the rolling
+`samples` and durable `lastSession` keys, but only the leader writes them.
 
-`power_status_logic.js` is marked `.pragma library`. QML's shared-library
+`power_status_logic_v2.js` is marked `.pragma library`. QML's shared-library
 semantics are required here: every bar/screen imports the same stateless
 power-domain functions, and DMS cache-busted hot reloads must not create a
 context-bound script that fails when the parent component is reloaded. The
-Node regression harness compiles the exact production file in a VM after
-removing only that QML pragma, so the same source remains the syntax gate.
+resource suffix is an explicit cache/API generation; any exported API or
+behavior change must bump it and update the QML import, Node harness, and
+references so an ordinary DMS hot reload cannot retain an older shared-library
+URL. The Node regression harness compiles the exact production file in a VM
+after removing only that QML pragma, so the same source remains the syntax
+gate.
 
 On DMS 1.5.3, `PluginService` has a first-write bug after a plugin reload: it
 attempts to connect a signal on a boolean `FileView.loaded` property. The
-leader primes the state writer and repeats the identical write once after
-280ms, beyond the 150ms debounce. This bounded, idempotent compatibility
-workaround is kept in the plugin; DMS itself is not patched.
+leader primes the state writer and repeats the current `samples` and
+`lastSession` values once after 280ms, beyond the 150ms debounce. This bounded,
+idempotent compatibility workaround is kept in the plugin; DMS itself is not
+patched.
 
 ## Chart
 
@@ -132,41 +146,47 @@ workaround is kept in the plugin; DMS itself is not patched.
   discharge hue from a muted discharge color (low draw) to the full discharge
   color (high draw), normalized over the window's observed min→max discharge
   wattage. The newest-sample marker matches.
-- Legend (Charging / Discharging / Plugged / Suspend) and a marker on the
+- Legend (Charging / On battery / Plugged in / Asleep) and a marker on the
   newest sample with its level.
 - 6h time ticks, 0/50/100% grid, theme-reactive repaint.
 - 24h window only (constant). No 12/24h toggle — deliberately skipped.
 
-## Usage stats
+## Popout layout and usage stats
 
-Four labeled rows beneath the chart. Battery stats come straight from the held
-sysfs values; session stats are computed from the persisted samples since the
-last unplug.
+The popout uses one continuous dashboard surface that keeps the fixed 24h
+chart, compact legend, and battery facts (design capacity, charge limit, and
+health) visible together. Session details follow below a subtle divider in an
+internal bounded vertical viewport, so a short or scaled display scrolls only
+the longer session-stat area without creating a second visual card.
+While on battery, the details always show the current session. When plugged or
+charging, they automatically show the persisted latest completed session as
+`Last battery session`; there is no session selector or additional view state.
+
+Battery stats come straight from held sysfs values; current-session stats are
+computed from rolling samples and durable completed-session stats are copied
+from the separate `lastSession` snapshot.
 
 - **Battery** — design capacity (`energy_full_design`, Wh), charge limit
   (`charge_control_end_threshold`, %), health (current capacity vs design, %).
-- **Since unplug** — starting capacity (`start % × current full capacity`, Wh),
+- **Starting energy/charge** — starting capacity (`start % × current full capacity`, Wh),
   starting battery % at the unplug moment, and elapsed time since unplug.
-- **Suspended** — *estimated* consumption, since no draw is logged during
+- **Asleep** — *estimated* consumption, since no draw is logged during
   gaps: for each recording gap the level drop `start% − end%` is recorded and
   summed; Wh is that drop converted against current full capacity. Time is the
   gap duration.
-- **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
+- **Awake** — measured consumption: energy used (power integral `Σ w·dt / 3600`
   Wh), drop (battery-% loss summed across each continuous active run), and
-  active time. A second unlabeled row beneath shows the min/avg/max discharge
-  rate, aligned under the Active values.
+  active time. An aligned, unlabeled follow-on row shows low/average/high draw
+  only when watt coverage is complete.
 
-"Active" means regular discharge samples; "suspended" means recording gaps
-(suspend/off). The session stats **freeze at the plug boundary**: the final
-discharge interval ends at the timestamp of the first plugged sample, not at
-the previous discharge sample. If there's no unplug in the window, an active
-session may use the first discharging sample; if there is no session, all
-session values are unavailable rather than fabricated zeroes. A gap over 150s
-is suspended. Physical Wh and rate stats require watt coverage at both ends of
-every active interval; legacy samples without `w` therefore make measured Wh
-and rate values unavailable for that session instead of mixing old and new
-data. Percentage/time values remain available when their sample coverage is
-valid.
+"Awake" means regular discharge samples; "Asleep" means recording
+gaps (suspend/off). Session stats **freeze at the plug boundary**: the final
+discharge interval ends at the timestamp and level of the first confirmed
+plugged/charging sample. If there is no session, values remain unavailable
+rather than fabricated zeroes. A gap over 150s is treated as asleep. Physical
+Wh and rate stats require watt coverage at both ends of every active interval;
+legacy samples without `w` therefore leave measured Wh/rate unavailable while
+valid time and battery-drop values remain available.
 
 ### Session start edge cases
 
@@ -188,9 +208,10 @@ valid.
   count suspended time from the recording gaps).
 - **Health is derived** from `energy_full / energy_full_design`; some firmwares
   don't expose design capacity, in which case health shows a dash.
-- The graph/stat card is inside a bounded vertical `Flickable` whose viewport
-  follows the trigger screen height, so DMS's content-height binding cannot
-  place an oversized fixed popout off-screen.
+- The session-details area is inside a bounded vertical `Flickable` whose
+  viewport follows the trigger screen height; it shares the dashboard surface,
+  while the chart and battery facts stay outside the scrolling content so DMS's
+  content-height binding cannot hide the fixed overview.
 - sysfs rather than UPower D-Bus: matches the zsh prompt, works on machines
   where the UPower service layer might aggregate differently, and is the only
   place the charge limit is reliably exposed.

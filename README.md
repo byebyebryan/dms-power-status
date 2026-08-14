@@ -11,18 +11,23 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
 - Battery icon + percentage in a compact pill.
 - Live charge/discharge wattage and time remaining (charge-limit aware).
 - 24h battery history popout: themed canvas chart with charging / on-battery /
-  plugged-in coloring, sleep gaps, legend, and a newest-sample marker. The
+  plugged-in coloring, asleep periods, legend, and a newest-sample marker. The
   on-battery line is rate-tinted — it fades from a muted hue at low draw to the
   full on-battery color at the window's max observed draw.
 - Battery stats in the popout: design capacity, charge limit, and health.
+- One continuous popout surface with a fixed 24h chart, compact legend, and
+  battery facts; only the longer session details scroll internally on short or
+  scaled displays.
 - State-aware current/last battery-session stats: starting energy/charge and
   duration, estimated asleep use, measured awake use, battery drop, and
-  low/average/high power draw. Empty or newly started sessions show concise
-  guidance instead of unavailable-value grids. Stats freeze at plug-in so a
-  finished session isn't lost, and a plug-during-sleep gap is handled as a
-  fresh unplug at wake.
-- Descriptive pill accessibility metadata and a short-screen scrollbar in the
-  popout.
+  low/average/high awake draw. Empty or newly started sessions show concise
+  guidance instead of unavailable-value grids. A completed session is frozen
+  at the confirmed plug/charge boundary and retained as the durable last
+  session across reloads and rolling-sample pruning. While on battery, the
+  current session is shown; while plugged in, the latest completed session is
+  shown directly as the last battery session.
+- Descriptive pill accessibility metadata and a short-screen scrollbar for
+  the session details.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
 - Supports both `energy_*` (µWh) and `charge_*` (µAh) batteries, converting
   charge values with `voltage_now`; multiple system batteries are aggregated.
@@ -94,10 +99,13 @@ dms ipc widget list | rg 'powerStatus|battery'
 journalctl --user -u dms.service --since '1 minute ago' --no-pager
 ```
 
-The regression command compiles the exact `power_status_logic.js` production
+The regression command compiles the exact `power_status_logic_v2.js` production
 source in a Node VM after removing only its QML `.pragma library` directive;
 there is intentionally no direct `node --check` command for that QML pragma
-file.
+file. The `_v2` suffix is an explicit QML resource/cache generation: when
+exported APIs or behavior change, bump the suffix and update the QML import,
+Node harness, and references so an ordinary DMS hot reload cannot retain an
+older shared-library URL.
 
 Standalone `qmllint`/`qmlscene` need the DMS import path and module versions to
 be configured; on an unconfigured host they may exit non-zero (or report

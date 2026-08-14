@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0
+
+- Persist the latest completed battery session separately from the rolling
+  samples so its statistics survive plugging in, sample pruning, and reloads.
+- Keep the 24-hour graph and battery facts visible in one continuous dashboard;
+  show the current session while discharging and the last completed session
+  while plugged in without a view selector.
+- Limit internal scrolling to session details and simplify the chart/session
+  vocabulary around Asleep, Awake, and awake power draw.
+- Keep forced state-boundary samples monotonic so a same-second plug transition
+  still finalizes the completed session.
+
 ## 0.8.1
 
 - Remove the pill hover tooltip because its popup fought the bar's hover/reveal

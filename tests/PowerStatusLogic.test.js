@@ -3,10 +3,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-// Compile the exact QML production resource. Node does not understand
+// Keep this path synchronized with the versioned filename imported by QML.
+// Bump that resource generation when exported APIs or behavior change so a
+// DMS hot reload cannot retain an older shared-library URL. Compile the exact
+// QML production resource. Node does not understand
 // `.pragma library`, so remove only that one directive in the VM copy; all
 // production code remains byte-for-byte identical and is still syntax-checked.
-const logicPath = path.join(__dirname, "..", "power_status_logic.js");
+const logicPath = path.join(__dirname, "..", "power_status_logic_v2.js");
 const productionSource = fs.readFileSync(logicPath, "utf8");
 const sourceLines = productionSource.split(/\r?\n/);
 const pragmaLine = sourceLines.findIndex(line => line === ".pragma library");
@@ -126,6 +129,10 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(stats.sessionAvailable, true);
     assert.equal(stats.elapsedSeconds, 120);
     assert.equal(stats.activeSeconds, 120);
+    assert.equal(stats.startT, 60);
+    assert.equal(stats.endT, 180);
+    assert.equal(stats.endPct, 78);
+    assert.equal(stats.completedBoundary, true);
     approx(stats.activeWh, (10 * 60 + 8 * 60) / 3600);
     assert.equal(stats.activePct, 1);
 }
@@ -140,6 +147,21 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(stats.activeSeconds, 60);
     assert.equal(stats.activePct, 1);
     approx(stats.activeWh, 10 / 60);
+}
+
+// A live discharge session exposes reliable timestamps and end level but is
+// not eligible for a durable snapshot until a plugged/charging boundary.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 0, w: 10 },
+        { t: 60, v: 79, c: 0, w: 10 },
+        { t: 120, v: 78, c: 0, w: 10 }
+    ], 120, 86400, 150, 50);
+    assert.equal(stats.startT, 0);
+    assert.equal(stats.endT, 120);
+    assert.equal(stats.endPct, 78);
+    assert.equal(stats.completedBoundary, false);
+    assert.equal(logic.snapshotFromStats(stats), null);
 }
 
 // Multiple active intervals are accumulated once per continuous run, not
@@ -180,6 +202,77 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(stats.elapsedSeconds, 180);
     assert.equal(stats.suspendedSeconds, 180);
     assert.equal(stats.suspendedPct, 2);
+}
+
+// Completed sessions can be persisted and restored without NaN values. The
+// snapshot keeps level/time data even when watt coverage is partial.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2 },
+        { t: 60, v: 79, c: 0 },
+        { t: 240, v: 77, c: 2 }
+    ], 240, 86400, 150, 50);
+    const snapshot = logic.snapshotFromStats(stats);
+    assert.equal(snapshot.completedBoundary, true);
+    assert.equal(snapshot.startT, 60);
+    assert.equal(snapshot.endT, 240);
+    assert.equal(snapshot.endPct, 77);
+    assert.equal(snapshot.wattCoverageComplete, false);
+    assert.equal(snapshot.activeWh, null);
+    assert.equal(snapshot.suspendedWh, 1);
+    assert.doesNotThrow(() => JSON.stringify(snapshot));
+    const restored = logic.normalizeLastSession(JSON.parse(JSON.stringify(snapshot)));
+    assert.deepEqual(restored, snapshot);
+}
+
+// A completed direct boundary with legacy/missing watt samples still retains
+// level/time/drop data, while all measured energy/rate fields stay null.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2 },
+        { t: 60, v: 79, c: 0 },
+        { t: 120, v: 78, c: 2, w: 0 }
+    ], 120, 86400, 150, 50);
+    const snapshot = logic.snapshotFromStats(stats);
+    assert.equal(snapshot.activeSeconds, 60);
+    assert.equal(snapshot.activePct, 1);
+    assert.equal(snapshot.activeWh, null);
+    assert.equal(snapshot.minWatts, null);
+    assert.equal(snapshot.wattCoverageComplete, false);
+}
+
+// Malformed snapshots are rejected; a newer completed session replaces an
+// older one, while duplicate/older boundaries retain the existing snapshot.
+{
+    const stats = logic.computeStats([
+        { t: 100, v: 90, c: 2, w: 0 },
+        { t: 160, v: 89, c: 0, w: 10 },
+        { t: 220, v: 88, c: 2, w: 0 }
+    ], 220, 86400, 150, 50);
+    const snapshot = logic.snapshotFromStats(stats);
+    assert.equal(snapshot.wattCoverageComplete, true);
+    assert.deepEqual(logic.normalizeLastSession(snapshot), snapshot);
+    assert.equal(
+        logic.normalizeLastSession({ ...snapshot, elapsedSeconds: snapshot.elapsedSeconds + 1 })
+            .elapsedSeconds,
+        snapshot.elapsedSeconds + 1
+    );
+    assert.equal(logic.normalizeLastSession({
+        ...snapshot, elapsedSeconds: snapshot.elapsedSeconds + 2
+    }), null);
+    assert.equal(logic.normalizeLastSession({ ...snapshot, activeWh: null }), null);
+    assert.equal(logic.normalizeLastSession({ ...snapshot, minWatts: 20, avgWatts: 10 }), null);
+    assert.equal(logic.normalizeLastSession({ ...snapshot, avgWatts: 20, maxWatts: 10 }), null);
+    assert.equal(logic.normalizeLastSession({ ...snapshot, endT: "bad" }), null);
+    assert.equal(logic.shouldReplaceLastSession(null, snapshot), true);
+    assert.equal(logic.shouldReplaceLastSession(snapshot, logic.snapshotFromStats({
+        sessionAvailable: true,
+        hasIntervals: false,
+        completedBoundary: false
+    })), false);
+    assert.equal(logic.shouldReplaceLastSession(snapshot, snapshot), false);
+    assert.equal(logic.shouldReplaceLastSession({ ...snapshot, endT: snapshot.endT + 1 }, snapshot), false);
+    assert.equal(logic.shouldReplaceLastSession(snapshot, { ...snapshot, endT: snapshot.endT + 1 }), true);
 }
 
 // Legacy samples without `w` cannot be integrated across. The conservative
