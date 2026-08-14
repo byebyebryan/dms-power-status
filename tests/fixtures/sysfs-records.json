@@ -1,0 +1,28 @@
+{
+  "batteries": [
+    {
+      "scope": "System",
+      "capacity": 78,
+      "status": "Not charging",
+      "currentUa": 1000,
+      "voltageUv": 11739000,
+      "chargeNowUah": 3978000,
+      "chargeFullUah": 5095000,
+      "chargeDesignUah": 7393000,
+      "limit": 80
+    },
+    {
+      "scope": "Device",
+      "capacity": 100,
+      "status": "Discharging",
+      "currentUa": 200,
+      "voltageUv": 3000000,
+      "chargeNowUah": 100000,
+      "chargeFullUah": 200000
+    }
+  ],
+  "sources": [
+    { "type": "Battery", "scope": "Device", "online": true },
+    { "type": "USB", "scope": "System", "online": true }
+  ]
+}

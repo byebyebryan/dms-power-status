@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+- Aggregate usable system batteries, support both ENERGY_* and CHARGE_* sysfs
+  units, and ignore peripheral/device-scope batteries and battery sources.
+- Normalize charging, plugged-idle, and active-discharge state so an online
+  source cannot hide a battery that is still discharging.
+- Share one sampler and debounced state writer across all bar/screen instances,
+  with leader handoff and a bounded DMS 1.5.3 first-write compatibility retry.
+- Make session statistics conservative around suspend gaps and legacy samples,
+  use current full capacity for physical Wh, and include the final plug-boundary
+  discharge interval.
+- Make the popout content-driven with a bounded scrollable history/statistics
+  viewport for short and scaled displays.
+- Add executable power-domain/session regression fixtures and run them in CI.
+
 ## 0.6.3
 
 - Raise popout height to 600px so the five stat rows don't clip on the graph

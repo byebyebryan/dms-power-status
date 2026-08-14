@@ -4,6 +4,7 @@ import qs.Common
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
+import "PowerStatusLogic.js" as Logic
 
 PluginComponent {
     id: root
@@ -21,38 +22,96 @@ PluginComponent {
     // never blanks the pill — we keep the previous valid value instead.
 
     readonly property int windowSeconds: 24 * 3600
-    readonly property int gapS: 1200
-    readonly property string _refreshProcId: "powerStatus.refresh." + Math.random().toString(36).slice(2)
+    // 2.5 slow-poll periods: a 60s heartbeat plus a conservative margin.
+    readonly property int gapS: Logic.GAP_SECONDS
+    // Proc keeps a persistent debouncer per id. A plugin-wide id lets leader
+    // handoff/reload reuse that entry instead of leaking one random id per
+    // destroyed widget instance; generation and leader checks reject stale
+    // callbacks from an earlier command.
+    readonly property string _refreshProcId: "powerStatus.refresh"
+    readonly property string _globalName: "powerStatus.shared"
+    readonly property string _instanceToken: Math.random().toString(36).slice(2) + Date.now().toString(36)
+    readonly property int _leaderLeaseMs: 7000
 
     property var samples: []
     property bool _reading: false
     property int _readingStartedAt: 0
-    property int _noBatteryStreak: 0
+    property int _readGeneration: 0
+    property bool _leader: false
+    property var _shared: null
+    property bool _stateRetryUsed: false
 
-    function loadSamples() {
+    function newSharedState() {
+        return {
+            initialized: false,
+            leaderToken: "",
+            leaderBeat: 0,
+            samples: [],
+            hasBattery: false,
+            level: 0,
+            state: "none",
+            watts: NaN,
+            energyNowWh: NaN,
+            energyFullWh: NaN,
+            energyFullDesignWh: NaN,
+            limit: 100,
+            noBatteryStreak: 0,
+            smoothedRate: 0,
+            lastRateSampleTime: 0,
+            rateSeedWindow: []
+        };
+    }
+
+    function sharedState() {
         if (!pluginService || !pluginId)
-            return;
-        const saved = pluginService.loadPluginState(pluginId, "samples", []);
-        if (Array.isArray(saved) && saved.length > 0) {
-            samples = saved;
-            pruneSamples();
-        }
+            return null;
+        const current = pluginService.getGlobalVar(pluginId, _globalName, null);
+        return current && typeof current === "object" ? current : newSharedState();
     }
 
     function pruneSamples() {
         const t0 = Math.floor(Date.now() / 1000) - windowSeconds - 3600;
-        let i = 0;
-        while (i < samples.length && samples[i].t < t0)
-            i++;
-        if (i > 0)
-            samples = samples.slice(i);
+        const source = _shared && Array.isArray(_shared.samples) ? _shared.samples : samples;
+        const kept = [];
+        for (let i = 0; i < source.length; i++) {
+            if (source[i] && Number(source[i].t) >= t0)
+                kept.push(source[i]);
+        }
+        kept.sort((a, b) => Number(a.t) - Number(b.t));
+        samples = kept;
+        if (_shared)
+            _shared.samples = kept;
     }
 
     function saveSamples() {
-        if (!pluginService || !pluginId)
+        if (!_leader || !pluginService || !pluginId || !_shared)
             return;
         pruneSamples();
-        pluginService.savePluginState(pluginId, "samples", samples);
+        pluginService.savePluginState(pluginId, "samples", _shared.samples);
+        publishShared();
+        scheduleStateRetry();
+    }
+
+    // DMS 1.5.3 attempts `FileView.loaded.connect(...)` on the first write
+    // after a plugin reload even though `loaded` is a bool. The writer exists
+    // on the debounced follow-up, so repeat this exact write once after the
+    // 150ms PluginService debounce. This is bounded and idempotent per leader
+    // epoch; newer DMS versions simply replace the same state value twice.
+    Timer {
+        id: stateRetryTimer
+        interval: 280
+        repeat: false
+        onTriggered: {
+            if (root._leader && root.pluginService && root.pluginId && root._shared)
+                root.pluginService.savePluginState(root.pluginId, "samples", root._shared.samples)
+        }
+    }
+
+    function scheduleStateRetry() {
+        if (_stateRetryUsed)
+            return;
+        _stateRetryUsed = true;
+        stateRetryTimer.restart();
     }
 
     // held (last-good) state
@@ -60,113 +119,169 @@ PluginComponent {
     property int _heldLevel: 0
     property bool _heldCharging: false
     property bool _heldPlugged: false
-    property real _heldWatts: 0
-    property real _heldEnergyNow: 0
-    property real _heldEnergyFull: 0
-    property real _heldEnergyFullDesign: 0
+    property real _heldWatts: NaN
+    property real _heldEnergyNow: NaN
+    property real _heldEnergyFull: NaN
+    property real _heldEnergyFullDesign: NaN
     property int _heldLimit: 100
 
-    // state-changed flags so we sample at boundaries
-    property bool _prevCharging: false
-    property bool _prevPlugged: false
+    function syncShared() {
+        const state = sharedState();
+        if (!state)
+            return;
+        _shared = state;
+        samples = Array.isArray(state.samples) ? state.samples : [];
+        _heldHasBattery = state.hasBattery === true;
+        _heldLevel = isFinite(Number(state.level)) ? Number(state.level) : 0;
+        _heldCharging = state.state === "charging";
+        _heldPlugged = state.state === "plugged" || state.state === "charging";
+        _heldWatts = Number(state.watts);
+        _heldEnergyNow = Number(state.energyNowWh);
+        _heldEnergyFull = Number(state.energyFullWh);
+        _heldEnergyFullDesign = Number(state.energyFullDesignWh);
+        _heldLimit = isFinite(Number(state.limit)) && Number(state.limit) > 0
+            ? Number(state.limit) : 100;
+        _smoothedRate = Number(state.smoothedRate);
+        _lastRateSampleTime = Number(state.lastRateSampleTime);
+        _rateSeedWindow = Array.isArray(state.rateSeedWindow) ? state.rateSeedWindow : [];
+    }
 
-    function parseOutput(out) {
-        const kv = {};
-        for (const line of (out || "").split("\n")) {
-            const eq = line.indexOf("=");
-            if (eq < 0)
-                continue;
-            kv[line.substring(0, eq).trim()] = line.substring(eq + 1).trim();
+    function publishShared() {
+        if (!_leader || !pluginService || !pluginId || !_shared)
+            return;
+        _shared.smoothedRate = _smoothedRate;
+        _shared.lastRateSampleTime = _lastRateSampleTime;
+        _shared.rateSeedWindow = _rateSeedWindow;
+        pluginService.setGlobalVar(pluginId, _globalName, _shared);
+        syncShared();
+    }
+
+    function initializeShared(state) {
+        if (state.initialized !== true) {
+            const saved = pluginService.loadPluginState(pluginId, "samples", []);
+            state.samples = Array.isArray(saved) ? saved : [];
+            state.initialized = true;
+            state.noBatteryStreak = 0;
+            pruneSamples();
         }
+    }
 
-        const found = kv["FOUND"];
-        if (found === "0" || found === undefined) {
-            _noBatteryStreak++;
-            if (_noBatteryStreak >= 3)
-                _heldHasBattery = false;
+    function tryClaimLeader() {
+        if (!pluginService || !pluginId)
+            return;
+        const now = Date.now();
+        let state = sharedState();
+        const currentToken = state.leaderToken || "";
+        const currentBeat = Number(state.leaderBeat) || 0;
+        if (_leader && currentToken === _instanceToken) {
+            state.leaderBeat = now;
+            _shared = state;
+            publishShared();
             return;
         }
-        _noBatteryStreak = 0;
-        _heldHasBattery = true;
-
-        // Only commit a field when this read is valid; otherwise keep last-good.
-        const cap = parseInt(kv["CAP"], 10);
-        if (!isNaN(cap) && cap >= 0)
-            _heldLevel = Math.min(100, Math.max(0, cap));
-
-        const st = kv["STATUS"];
-        if (st === "Charging")
-            _heldCharging = true;
-        else if (st === "Discharging" || st === "Not charging" || st === "Full")
-            _heldCharging = false;
-        // st empty/Unknown/PendingCharge -> keep last-good
-
-        const ac = kv["AC"];
-        if (ac === "1")
-            _heldPlugged = true;
-        else if (ac === "0")
-            _heldPlugged = false;
-
-        // power_now is µW; fall back to current × voltage like the prompt.
-        let p = parseInt(kv["POWER"], 10);
-        if (isNaN(p) || p < 0) {
-            const c = parseInt(kv["CUR"], 10);
-            const v = parseInt(kv["VOLT"], 10);
-            p = (!isNaN(c) && !isNaN(v)) ? Math.floor(c * v / 1000000) : NaN;
+        if (currentToken && now - currentBeat <= _leaderLeaseMs) {
+            _leader = false;
+            syncShared();
+            return;
         }
-        if (!isNaN(p) && p >= 0)
-            _heldWatts = p / 1000000; // W
 
-        // energy_* are µWh.
-        const en = parseInt(kv["ENERGY_NOW"], 10);
-        if (!isNaN(en) && en >= 0)
-            _heldEnergyNow = en / 1000000; // Wh
-        const ef = parseInt(kv["ENERGY_FULL"], 10);
-        if (!isNaN(ef) && ef > 0)
-            _heldEnergyFull = ef / 1000000; // Wh
+        state.leaderToken = _instanceToken;
+        state.leaderBeat = now;
+        pluginService.setGlobalVar(pluginId, _globalName, state);
+        const confirmed = sharedState();
+        if (confirmed && confirmed.leaderToken === _instanceToken) {
+            _leader = true;
+            _shared = confirmed;
+            initializeShared(_shared);
+            _shared.leaderBeat = now;
+            _stateRetryUsed = false;
+            // Prime the debounced state writer for this leader epoch. On DMS
+            // 1.5.3 the first call may emit the known FileView warning; the
+            // bounded retry in saveSamples() follows after that debounce.
+            saveSamples();
+            publishShared();
+            refreshTimer.restart();
+            root.refresh();
+        } else {
+            _leader = false;
+            syncShared();
+        }
+    }
 
-        const efd = parseInt(kv["ENERGY_FULL_DESIGN"], 10);
-        if (!isNaN(efd) && efd > 0)
-            _heldEnergyFullDesign = efd / 1000000; // Wh
+    function releaseLeader() {
+        if (!_leader || !pluginService || !pluginId)
+            return;
+        const state = sharedState();
+        if (state && state.leaderToken === _instanceToken) {
+            state.leaderToken = "";
+            state.leaderBeat = 0;
+            pluginService.setGlobalVar(pluginId, _globalName, state);
+        }
+    }
 
-        const lim = parseInt(kv["LIMIT"], 10);
-        if (!isNaN(lim) && lim > 0 && lim <= 100)
-            _heldLimit = lim;
+    function parseOutput(out) {
+        if (!_leader || !_shared)
+            return;
+        const aggregate = Logic.aggregateDelimitedOutput(out);
+        if (!aggregate.hasBattery) {
+            _shared.noBatteryStreak = (Number(_shared.noBatteryStreak) || 0) + 1;
+            // Only successful, structurally valid empty scans reach here. A
+            // command failure returns before this function and keeps last-good
+            // presence/state intact.
+            if (_shared.noBatteryStreak >= 3) {
+                _shared.hasBattery = false;
+                _shared.state = "none";
+            }
+            publishShared();
+            return;
+        }
 
-        // Sample at plug/charging boundaries so the graph flips immediately,
-        // and reset the rate EMA so a transient can't seed it.
-        if (_heldCharging !== _prevCharging || _heldPlugged !== _prevPlugged) {
-            _prevCharging = _heldCharging;
-            _prevPlugged = _heldPlugged;
+        _shared.noBatteryStreak = 0;
+        const previousCode = Logic.sampleCodeForState(_shared.state);
+        _shared.hasBattery = true;
+        _shared.level = aggregate.level;
+        _shared.state = aggregate.state;
+        _shared.watts = aggregate.watts;
+        _shared.energyNowWh = aggregate.energyNowWh;
+        _shared.energyFullWh = aggregate.energyFullWh;
+        _shared.energyFullDesignWh = aggregate.energyFullDesignWh;
+        _shared.limit = aggregate.limit;
+        syncShared();
+
+        const nextCode = aggregate.sampleCode;
+        if (nextCode !== previousCode) {
             root._resetSmoothedRate();
             root.sample(true);
         } else if (samples.length === 0) {
-            // First confirmed read with no boundary: seed the sampler now so
-            // the chart isn't empty until the next 60s heartbeat.
-            root.sample();
+            root.sample(false);
         }
         root.updateSmoothedRate();
+        publishShared();
     }
 
     function refresh() {
-        // If a previous read's callback never fired, let it expire after a
-        // few seconds so refresh can't stall permanently.
+        if (!_leader)
+            return;
+        // Proc's fourth argument is debounce, not timeout. Keep the explicit
+        // 1s command timeout below shorter than this 5s stale-read release.
         if (_reading) {
             if (Date.now() - _readingStartedAt < 5000)
                 return;
             _reading = false;
+            ++_readGeneration;
         }
         _reading = true;
         _readingStartedAt = Date.now();
+        const generation = ++_readGeneration;
         const cmd = `
-ac=0
-found=0
 for s in /sys/class/power_supply/*; do
   [ -d "$s" ] || continue
   t=$(cat "$s/type" 2>/dev/null) || continue
   [ "$t" = "Battery" ] || continue
-  found=1
+  scope=$(cat "$s/scope" 2>/dev/null)
+  [ "$scope" = "Device" ] && continue
   cap=$(cat "$s/capacity" 2>/dev/null)
+  [ -n "$cap" ] || continue
   st=$(cat "$s/status" 2>/dev/null)
   p=$(cat "$s/power_now" 2>/dev/null)
   c=$(cat "$s/current_now" 2>/dev/null)
@@ -174,34 +289,29 @@ for s in /sys/class/power_supply/*; do
   en=$(cat "$s/energy_now" 2>/dev/null)
   ef=$(cat "$s/energy_full" 2>/dev/null)
   efd=$(cat "$s/energy_full_design" 2>/dev/null)
-  if [ -z "$efd" ]; then efd=$(cat "$s/charge_full_design" 2>/dev/null); fi
+  cn=$(cat "$s/charge_now" 2>/dev/null)
+  cf=$(cat "$s/charge_full" 2>/dev/null)
+  cfd=$(cat "$s/charge_full_design" 2>/dev/null)
   lim=$(cat "$s/charge_control_end_threshold" 2>/dev/null)
   if [ -z "$lim" ]; then lim=$(cat "$s/charge_control_limit" 2>/dev/null); fi
   if [ -z "$lim" ]; then lim=$(cat "$s/charge_stop_threshold" 2>/dev/null); fi
-  echo "CAP=$cap"
-  echo "STATUS=$st"
-  echo "POWER=$p"
-  echo "CUR=$c"
-  echo "VOLT=$v"
-  echo "ENERGY_NOW=$en"
-  echo "ENERGY_FULL=$ef"
-  echo "ENERGY_FULL_DESIGN=$efd"
-  echo "LIMIT=$lim"
-  break
+  printf 'B\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$scope" "$cap" "$st" "$p" "$c" "$v" "$en" "$ef" "$efd" "$cn" "$cf" "$cfd" "$lim"
 done
 for s in /sys/class/power_supply/*; do
   [ -f "$s/online" ] || continue
+  t=$(cat "$s/type" 2>/dev/null) || continue
+  scope=$(cat "$s/scope" 2>/dev/null)
   o=$(cat "$s/online" 2>/dev/null)
-  [ "$o" = "1" ] && ac=1 && break
-done
-echo "FOUND=$found"
-echo "AC=$ac"`;
-        Proc.runCommand(_refreshProcId, ["sh", "-c", cmd], (stdout, exit) => {
+  printf 'S\\t%s\\t%s\\t%s\\n' "$t" "$scope" "$o"
+done`;
+        Proc.runCommand(_refreshProcId, ["sh", "-c", cmd], (stdout, exitCode) => {
+            if (generation !== _readGeneration)
+                return;
             _reading = false;
-            if (root === null)
+            if (root === null || exitCode !== 0)
                 return;
             root.parseOutput(stdout);
-        }, 500);
+        }, 0, 1000);
     }
 
     Timer {
@@ -211,43 +321,56 @@ echo "AC=$ac"`;
         // battery-less desktops.
         interval: _heldHasBattery ? 5000 : 60000
         repeat: true
-        running: true
+        running: _leader
         onTriggered: root.refresh()
     }
 
+    Timer {
+        id: leaderHeartbeatTimer
+        interval: 2000
+        repeat: true
+        running: root._leader
+        onTriggered: root.tryClaimLeader()
+    }
+
+    Timer {
+        id: leaderElectionTimer
+        interval: 1000
+        repeat: true
+        running: !root._leader
+        onTriggered: root.tryClaimLeader()
+    }
+
     function sampleState() {
-        // Mirrors DMS batteryStatus: charging requires an actual power draw.
-        // A plugged-in battery at its charge limit has changeRate <= 0 and is
-        // idle, not charging.
-        if (_heldCharging && _heldWatts > 0)
-            return 1;
-        if (!_heldPlugged)
-            return 0;
-        return 2;
+        return _shared ? Logic.sampleCodeForState(_shared.state) : 2;
     }
 
     function sample(force) {
-        if (!_heldHasBattery)
+        if (!_leader || !_heldHasBattery || !_shared)
             return;
         const t = Math.floor(Date.now() / 1000);
-        const last = samples.length > 0 ? samples[samples.length - 1] : null;
+        const last = _shared.samples.length > 0 ? _shared.samples[_shared.samples.length - 1] : null;
         // The 5s floor prevents heartbeat/boundary double-sampling, but a
         // boundary sample must land immediately so the graph flips at once.
         if (last && t - last.t < 5 && !force)
             return;
-        samples = samples.concat([{
+        _shared.samples = _shared.samples.concat([{
             "t": t,
             "v": _heldLevel,
             "c": sampleState(),
-            "w": _heldWatts
+            // Keep the key on every new sample. A null value is explicitly
+            // unavailable and is never integrated by the conservative stats
+            // coverage policy.
+            "w": isFinite(_heldWatts) && _heldWatts >= 0 ? _heldWatts : null
         }]);
+        samples = _shared.samples;
         saveSamples();
     }
 
     Timer {
         interval: 60000
         repeat: true
-        running: _heldHasBattery
+        running: _leader && _heldHasBattery
         onTriggered: root.sample()
     }
 
@@ -260,6 +383,8 @@ echo "AC=$ac"`;
     property var _rateSeedWindow: []
 
     function _resetSmoothedRate() {
+        if (!_leader)
+            return;
         _smoothedRate = 0;
         _lastRateSampleTime = 0;
         _rateSeedWindow = [];
@@ -267,7 +392,7 @@ echo "AC=$ac"`;
 
     function updateSmoothedRate() {
         const w = _heldWatts;
-        if (!_heldHasBattery || w <= 0) {
+        if (!_leader || !_heldHasBattery || !isFinite(w) || w <= 0) {
             _smoothedRate = 0;
             _lastRateSampleTime = 0;
             return;
@@ -297,12 +422,17 @@ echo "AC=$ac"`;
         return _smoothedRate > 0 && _rateSeedWindow.length >= 2;
     }
 
-    onPluginServiceChanged: root.loadSamples()
-    onPluginIdChanged: root.loadSamples()
-    Component.onCompleted: {
-        root.loadSamples();
-        root.refresh();
-        root.sample();
+    onPluginServiceChanged: root.tryClaimLeader()
+    onPluginIdChanged: root.tryClaimLeader()
+    Component.onCompleted: root.tryClaimLeader()
+    Component.onDestruction: root.releaseLeader()
+
+    Connections {
+        target: root.pluginService
+        function onGlobalVarChanged(changedPluginId, varName) {
+            if (changedPluginId === root.pluginId && varName === root._globalName && !root._leader)
+                root.syncShared();
+        }
     }
 
     // ── Derived state ──
@@ -334,7 +464,9 @@ echo "AC=$ac"`;
         }
         return Theme.widgetIconColor;
     }
-    readonly property int textSize: Theme.barTextSize(barThickness, barConfig?.fontScale, barConfig?.maximizeWidgetText)
+    readonly property int textSize: Theme.barTextSize(barThickness,
+        barConfig ? barConfig.fontScale : undefined,
+        barConfig ? barConfig.maximizeWidgetText : undefined)
 
     horizontalBarPill: hasBattery ? horizontalPill : null
     verticalBarPill: hasBattery ? verticalPill : null
@@ -362,7 +494,7 @@ echo "AC=$ac"`;
             return "";
         const capacity = _heldEnergyFull;
         const energy = _heldEnergyNow;
-        if (capacity <= 0 || energy <= 0)
+        if (!isFinite(capacity) || !isFinite(energy) || capacity <= 0 || energy <= 0)
             return "";
         let seconds;
         if (isCharging) {
@@ -420,136 +552,18 @@ echo "AC=$ac"`;
     //   - Active: measured from regular samples — Wh from the power integral,
     //     % from the battery-level drop across each continuous active run.
     //   - Suspended: estimated, since no draw is logged during gaps — the
-    //     level drop across each gap, converted to Wh against design capacity.
+    //     level drop across each gap, converted to Wh against current full
+    //     capacity. Design capacity is used only for health.
     // Since-unplug: starting % is the level at the unplug moment; starting
-    // capacity = start% × design capacity; elapsed = time since unplug.
-    // Old samples saved without "w" are skipped for the Wh math only. Battery
-    // stats (design capacity, charge limit, health) come from held sysfs values.
+    // capacity = start% × current full capacity; elapsed = time since unplug.
+    // A session without watt coverage is unavailable. Legacy samples saved
+    // without "w" are never integrated across newer samples.
 
     readonly property var stats: computeStats()
 
     function computeStats() {
-        const now = Math.floor(Date.now() / 1000);
-        const t0 = now - windowSeconds - 3600;
-        const pts = [];
-        for (let i = 0; i < samples.length; i++) {
-            if (samples[i].t >= t0)
-                pts.push(samples[i]);
-        }
-
-        // Session start = last unplug transition (last time a plugged sample
-        // was followed by a discharging one). A risen level across a recording
-        // gap (plug-in during suspend) also restarts the session at the wake
-        // sample — but only when we woke unplugged; waking plugged is treated
-        // as a normal plug (no reset). A +1% margin avoids treating rounding
-        // noise on `capacity` as a charge event. If we're discharging and no
-        // transition is in the window, the unplug predates it — use window start.
-        let startIdx = -1;
-        for (let i = 1; i < pts.length; i++) {
-            const p = pts[i - 1];
-            const c = pts[i];
-            if (p.c !== 0 && c.c === 0)
-                startIdx = i;
-            else if (p.c === 0 && c.c === 0 && c.t - p.t > gapS && c.v > p.v + 1)
-                startIdx = i;
-        }
-        const last = pts.length > 0 ? pts[pts.length - 1] : null;
-        if (startIdx < 0 && last && last.c === 0)
-            startIdx = 0;
-
-        const designWh = _heldEnergyFullDesign;
-
-        // Since-unplug values. Starting % is the level at the unplug moment;
-        // starting capacity converts it against design capacity.
-        const startPct = startIdx >= 0 ? pts[startIdx].v : NaN;
-        const startT = startIdx >= 0 ? pts[startIdx].t : NaN;
-        const startWh = (designWh > 0 && !isNaN(startPct))
-            ? startPct / 100 * designWh : NaN;
-
-        // Consumption is split at recording gaps:
-        //   - active: measured, regular samples
-        //   - suspended: estimated from the level drop across each gap
-        let activeS = 0;
-        let activeWh = 0;
-        let activePct = 0;
-        let suspendedS = 0;
-        let suspendedPct = 0;
-        // suspendedWh needs design capacity to convert the % drop; without it we
-        // can't compute a Wh figure, so leave NaN (renders "–") rather than 0.
-        let suspendedWh = designWh > 0 ? 0 : NaN;
-        let minW = Infinity;
-        let maxW = -Infinity;
-        let sumWt = 0;
-        let sumDt = 0;
-        // Last sample timestamp within the session: when still discharging it
-        // tracks now; when we plugged back in it freezes at the plug moment so
-        // the since-unplug stats (incl. elapsed) survive plugging in.
-        let lastT = null;
-
-        if (startIdx >= 0) {
-            let runStart = null;
-            let lastActiveV = null;
-            for (let i = startIdx + 1; i < pts.length; i++) {
-                const a = pts[i - 1];
-                const b = pts[i];
-                if (b.c !== 0) {
-                    // plugged back in: session ends at the last discharge sample
-                    lastT = a.t;
-                    break;
-                }
-                const dt = b.t - a.t;
-                if (dt <= 0)
-                    continue;
-                if (dt > gapS) {
-                    // suspend gap: close the active run, estimate suspended drain
-                    lastT = b.t;
-                    if (runStart !== null) {
-                        activePct += Math.max(0, runStart - a.v);
-                        runStart = null;
-                    }
-                    suspendedS += dt;
-                    const drop = Math.max(0, a.v - b.v);
-                    suspendedPct += drop;
-                    if (designWh > 0)
-                        suspendedWh += drop / 100 * designWh;
-                    continue;
-                }
-                activeS += dt;
-                lastT = b.t;
-                if (runStart === null)
-                    runStart = a.v;
-                lastActiveV = b.v;
-                const w = b.w;
-                if (typeof w === "number" && isFinite(w) && w >= 0) {
-                    activeWh += w * dt / 3600;
-                    if (w < minW)
-                        minW = w;
-                    if (w > maxW)
-                        maxW = w;
-                    sumWt += w * dt;
-                    sumDt += dt;
-                }
-            }
-            if (runStart !== null && lastActiveV !== null)
-                activePct += Math.max(0, runStart - lastActiveV);
-        }
-
-        const elapsedS = (startIdx >= 0 && lastT !== null) ? lastT - startT : NaN;
-
-        return {
-            "startPct": startPct,
-            "startWh": startWh,
-            "elapsedSeconds": elapsedS,
-            "activeSeconds": activeS,
-            "activeWh": activeWh,
-            "activePct": activePct,
-            "suspendedSeconds": suspendedS,
-            "suspendedWh": suspendedWh,
-            "suspendedPct": suspendedPct,
-            "minWatts": minW === Infinity ? NaN : minW,
-            "avgWatts": sumDt > 0 ? sumWt / sumDt : NaN,
-            "maxWatts": maxW === -Infinity ? NaN : maxW
-        };
+        return Logic.computeStats(samples, Math.floor(Date.now() / 1000),
+            windowSeconds, gapS, _heldEnergyFull);
     }
 
     function formatDuration(seconds) {
@@ -580,7 +594,8 @@ echo "AC=$ac"`;
     }
 
     function formatHealth() {
-        if (_heldEnergyFullDesign <= 0 || _heldEnergyFull <= 0)
+        if (!isFinite(_heldEnergyFullDesign) || !isFinite(_heldEnergyFull)
+                || _heldEnergyFullDesign <= 0 || _heldEnergyFull <= 0)
             return "–";
         return Math.round(_heldEnergyFull / _heldEnergyFullDesign * 100) + "%";
     }
@@ -1016,20 +1031,39 @@ echo "AC=$ac"`;
                     }
                 }
 
-                // graph card
-                StyledRect {
+                // The graph/stat card is intentionally scrollable. DMS binds
+                // PluginPopout's outer height to implicitHeight, so a fixed
+                // popoutHeight cannot protect short or scaled displays.
+                Flickable {
+                    id: statsViewport
                     width: parent.width
-                    height: graphColumn.implicitHeight + Theme.spacingM * 2
-                    radius: Theme.cornerRadius
-                    color: Theme.nestedSurface
-                    border.color: Theme.outlineLight
-                    border.width: 1
+                    readonly property real availableScreenHeight: root.parentScreen && root.parentScreen.height > 0
+                        ? root.parentScreen.height : 800
+                    readonly property real viewportLimit: Math.max(180,
+                        Math.min(640, availableScreenHeight * 0.72))
+                    height: Math.min(graphCard.implicitHeight, viewportLimit)
+                    implicitHeight: height
+                    contentWidth: width
+                    contentHeight: graphCard.implicitHeight
+                    clip: true
+                    interactive: contentHeight > height
+                    boundsBehavior: Flickable.StopAtBounds
 
-                    Column {
-                        id: graphColumn
-                        width: parent.width - Theme.spacingM * 2
-                        anchors.centerIn: parent
-                        spacing: Theme.spacingS
+                    StyledRect {
+                        id: graphCard
+                        width: statsViewport.width
+                        implicitHeight: graphColumn.implicitHeight + Theme.spacingM * 2
+                        height: implicitHeight
+                        radius: Theme.cornerRadius
+                        color: Theme.nestedSurface
+                        border.color: Theme.outlineLight
+                        border.width: 1
+
+                        Column {
+                            id: graphColumn
+                            width: parent.width - Theme.spacingM * 2
+                            anchors.centerIn: parent
+                            spacing: Theme.spacingS
 
                         // legend
                         Row {
@@ -1149,14 +1183,15 @@ echo "AC=$ac"`;
                                 { "label": "Max", "value": root.formatWatt(root.stats.maxWatts) }
                             ]
                         }
+                        }
                     }
                 }
             }
         }
     }
 
-    popoutWidth: 680
-    popoutHeight: 600
+    popoutWidth: root.parentScreen && root.parentScreen.width > 0
+        ? Math.min(680, Math.max(280, root.parentScreen.width * 0.9)) : 680
 
     Component {
         id: horizontalPill

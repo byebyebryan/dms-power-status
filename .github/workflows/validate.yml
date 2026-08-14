@@ -53,6 +53,11 @@ jobs:
           if not component_path.is_file():
               print(f"component path does not exist: {component}", file=sys.stderr)
               sys.exit(1)
+
+          changelog = (root / "CHANGELOG.md").read_text()
+          if f"## {manifest['version']}" not in changelog:
+              print("manifest version is missing from CHANGELOG.md", file=sys.stderr)
+              sys.exit(1)
           PY
 
       - name: Sanity-check QML balance
@@ -112,3 +117,8 @@ jobs:
               sys.exit(1)
           print("QML balance OK")
           PY
+
+      - name: Run production logic regressions
+        run: |
+          node --check PowerStatusLogic.js
+          node tests/PowerStatusLogic.test.js

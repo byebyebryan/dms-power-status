@@ -21,15 +21,23 @@ bar pill — and adds a 24h charge history chart with usage stats as its popout.
   Stats freeze at plug-in so a finished discharge run isn't lost, and a
   plug-during-suspend is handled as a fresh unplug at wake.
 - Charge limit read from firmware via sysfs, so the ETA and graph respect it.
+- Supports both `energy_*` (µWh) and `charge_*` (µAh) batteries, converting
+  charge values with `voltage_now`; multiple system batteries are aggregated.
+- Ignores peripheral/device-scope batteries and battery-type `online` entries
+  when deciding whether the laptop is plugged in.
 - Reads battery data directly from sysfs (like the zsh battery prompt); no DMS
   `BatteryService` dependency.
+- All bar/screen instances share one process-wide sampler and history writer;
+  a short-lived leader handoff keeps reloads and multi-monitor bars consistent.
+- DMS 1.5.3's first state-write quirk is handled with one bounded, idempotent
+  retry after the shell's persistence debounce.
 - Holds last-good values so plug/unplug transients never blank the pill.
 - Hides itself on systems without a battery.
 - Supports horizontal and vertical DankBar layouts.
 
 ## Requirements
 
-- DankMaterialShell `>=1.4.6`.
+- DankMaterialShell `>=1.5.0` (for shared plugin globals).
 - A system battery exposed via `/sys/class/power_supply`.
 
 No external runtime command-line tools are required (plain POSIX `sh`).
@@ -47,8 +55,17 @@ For local development from this checkout:
 
 ```sh
 mkdir -p ~/.config/DankMaterialShell/plugins
-ln -sfn "$PWD" ~/.config/DankMaterialShell/plugins/powerStatus
+ln -sfnT -- "$(git rev-parse --show-toplevel)" ~/.config/DankMaterialShell/plugins/powerStatus
 ```
+
+Run that command inside this repository. `git rev-parse --show-toplevel`
+resolves the repository itself, so a shell launched from another directory
+cannot accidentally link an unrelated `$PWD` into the DMS plugin directory.
+GNU `-T` treats `powerStatus` as the link itself, preventing an existing
+directory from becoming a nested `powerStatus/dms-power-status` link. It
+replaces an existing symlink or file, but deliberately refuses a real
+non-empty directory; move an existing clone aside first if you intend to
+switch that installation to a symlink.
 
 Then load it in DMS:
 
@@ -67,15 +84,18 @@ Useful local validation commands:
 
 ```sh
 jq empty plugin.json
+node tests/PowerStatusLogic.test.js
 dms ipc plugins reload powerStatus
 dms ipc plugins status powerStatus
 dms ipc widget list | rg 'powerStatus|battery'
 journalctl --user -u dms.service --since '1 minute ago' --no-pager
 ```
 
-Note: `qmllint` returns a non-zero exit on this file due to `?.` optional
-chaining syntax it doesn't understand (pre-existing, also affects the original
-DMS widget); the parse is otherwise clean.
+Standalone `qmllint`/`qmlscene` need the DMS import path and module versions to
+be configured; on an unconfigured host they may exit non-zero (or report
+`Library import requires a version`) before loading the component. The CI
+balance check and production-logic Node tests remain available in that
+environment.
 
 ## License
 

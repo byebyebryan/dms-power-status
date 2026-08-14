@@ -1,7 +1,7 @@
 # Design: Charge history graph for DMS Power Status
 
-Status: implemented and validated live on laptop (carbon) and desktop
-(battery-less) machines.
+Status: implemented for plugin 0.7.0; validate against the installed DMS after
+deployment because the widget deliberately uses DMS PluginService globals.
 
 ## Context
 
@@ -48,18 +48,32 @@ Fields read in one `sh -c` (µW/µWh converted to W/Wh):
 - `status` → charging state (`Charging` / `Discharging` / `Not charging` /
   `Full`)
 - `power_now`, with `current_now × voltage_now` fallback → watts
-- `energy_now` / `energy_full` → Wh for ETA math
-- `energy_full_design` (`charge_full_design` fallback) → Wh for health
-- any supply's `online` → AC / plugged-in
+- `energy_now` / `energy_full` → Wh for ETA and physical-capacity math
+- `charge_now` / `charge_full` → converted to µWh with `voltage_now` when the
+  ENERGY_* family is absent
+- `energy_full_design` / `charge_full_design` → Wh for health only
+- `power_now`, or `current_now × voltage_now`, is summed across usable batteries
+- online non-battery system sources (`Mains`, `USB`, USB-C, wireless, and
+  vendor-specific system supplies) → source presence; battery and
+  `scope=Device` entries are ignored
 - `charge_control_end_threshold` → charge limit
+
+Every battery must expose a valid `capacity` and is excluded when
+`scope=Device`; this prevents HID/peripheral batteries from changing the
+laptop's percentage or plugged state. When every usable battery has a given
+physical value, full/now/design values are aggregated; if one battery lacks a
+physical value, that quantity is unavailable rather than a partial sum.
 
 ### Transient handling
 
-Values are **held last-good**: a transient empty/0 read on plug/unplug keeps
-the previous valid value, so the pill never blanks. Battery presence uses a
-`type=Battery` scan with a 3-streak debounce before hiding on a battery-less
-desktop. The refresh timer polls every 5s while a battery is present, and falls
-back to a 60s probe on desktops (so a hotplugged battery is still detected).
+Values are **held last-good**: a command with a non-zero exit or an expired
+callback does not change presence or state. Only a successful scan that
+confirms no usable battery advances the three-read hide streak. The command
+timeout is 1s, shorter than the 5s stale-read release. The refresh timer polls
+every 5s while a battery is present, and falls back to a 60s probe on desktops.
+Discharging status is authoritative over a simultaneous online source; the
+normalized state is one of `charging`, `plugged`, `discharging`, or `none` and
+drives the pill, icon, ETA, and samples together.
 
 ## ETA
 
@@ -73,25 +87,32 @@ always targets 100%):
   transitions so a transient low read right after unplug can't spike the ETA).
 - Rendered as `h:mm`.
 
-## Retention
+## Retention and shared sampling
 
 DMS's `PluginService.savePluginState` / `loadPluginState` persist to a
 per-plugin JSON file at
 `~/.local/state/DankMaterialShell/plugins/powerStatus_state.json` (atomic,
-debounced). The sampler lives on the plugin root (a persistent instance, alive
-while DMS runs), so it collects in the background whether or not the popout is
-open.
+debounced). The elected leader runs independently of the popout, so history
+collection continues while the popout is closed.
 
-- 60s heartbeat sample → `{t, level, state, watts}` plus immediate samples on
-  plug/charging boundaries.
+- 60s heartbeat sample → `{t, v, c, w}` (`c`: 0 discharging, 1 charging, 2
+  plugged-idle) plus immediate samples on plug/charging boundaries.
 - 24h window; pruned on load/save. ~1440 entries, trivial size.
 
-### Single instance assumption
+Each DMS bar/screen creates a separate widget object. Runtime state is kept in
+the DMS `PluginService` global variable `powerStatus.shared`; a lease elects
+one leader to run the sysfs sampler, rate smoother, and whole-array state
+writer. Followers mirror the same samples and normalized fields, so two
+outputs cannot perform competing read-modify-write operations. If the leader
+is destroyed, another instance claims the lease after 7s (or immediately when
+the old instance releases it). The persisted file remains the one plugin state
+key, but only the leader writes it.
 
-One instance in the bar. Multiple instances are technically possible but not
-realistic for a battery widget; `savePluginState` is whole-value per plugin, so
-two writers could lose a sample on read-modify-write — acceptable. A
-`setGlobalVar` sampler-claim is the escape hatch if ever needed.
+On DMS 1.5.3, `PluginService` has a first-write bug after a plugin reload: it
+attempts to connect a signal on a boolean `FileView.loaded` property. The
+leader primes the state writer and repeats the identical write once after
+280ms, beyond the 150ms debounce. This bounded, idempotent compatibility
+workaround is kept in the plugin; DMS itself is not patched.
 
 ## Chart
 
@@ -117,28 +138,28 @@ last unplug.
 
 - **Battery** — design capacity (`energy_full_design`, Wh), charge limit
   (`charge_control_end_threshold`, %), health (current capacity vs design, %).
-- **Since unplug** — starting capacity (`start % × design capacity`, Wh),
+- **Since unplug** — starting capacity (`start % × current full capacity`, Wh),
   starting battery % at the unplug moment, and elapsed time since unplug.
 - **Suspended** — *estimated* consumption, since no draw is logged during
   gaps: for each recording gap the level drop `start% − end%` is recorded and
-  summed; Wh is that drop converted against design capacity. Time is the gap
-  duration.
+  summed; Wh is that drop converted against current full capacity. Time is the
+  gap duration.
 - **Active** — measured consumption: drained (power integral `Σ w·dt / 3600`
   Wh), drop (battery-% loss summed across each continuous active run), and
   active time. A second unlabeled row beneath shows the min/avg/max discharge
   rate, aligned under the Active values.
 
 "Active" means regular discharge samples; "suspended" means recording gaps
-(suspend/off). The session stats **freeze at the plug moment**: once you plug
-back in, the since-unplug numbers (including elapsed) keep their last discharge
-values rather than resetting or blanking, so the run isn't lost. This was a
-deliberate choice over blanking to dashes — freezing preserves a finished
-discharge run for review, and the row's "since unplug" framing stays honest
-because elapsed no longer grows while charging. If there's no unplug in the
-window (was already discharging, or never), the session falls back to the
-window start or shows all dashes. Samples recorded before the `w` field existed
-are skipped for the Wh math only (% and time still count), so upgrading never
-misreports.
+(suspend/off). The session stats **freeze at the plug boundary**: the final
+discharge interval ends at the timestamp of the first plugged sample, not at
+the previous discharge sample. If there's no unplug in the window, an active
+session may use the first discharging sample; if there is no session, all
+session values are unavailable rather than fabricated zeroes. A gap over 150s
+is suspended. Physical Wh and rate stats require watt coverage at both ends of
+every active interval; legacy samples without `w` therefore make measured Wh
+and rate values unavailable for that session instead of mixing old and new
+data. Percentage/time values remain available when their sample coverage is
+valid.
 
 ### Session start edge cases
 
@@ -147,8 +168,9 @@ misreports.
 - **Plug during suspend, wake unplugged** (level rose across a gap): treated as
   a fresh unplug at the wake sample — the risen charge sits outside the
   session, so no suspended time/Wh is charged against it.
-- **Plug during suspend, wake plugged**: no reset; since we're plugged, the
-  session stats keep their frozen pre-suspend discharge values.
+- **Plug during suspend, wake plugged**: no reset; the long unobserved interval
+  is classified as suspended and the session freezes at the first confirmed
+  plugged sample.
 
 ## Trade-offs accepted
 
@@ -159,6 +181,9 @@ misreports.
   count suspended time from the recording gaps).
 - **Health is derived** from `energy_full / energy_full_design`; some firmwares
   don't expose design capacity, in which case health shows a dash.
+- The graph/stat card is inside a bounded vertical `Flickable` whose viewport
+  follows the trigger screen height, so DMS's content-height binding cannot
+  place an oversized fixed popout off-screen.
 - sysfs rather than UPower D-Bus: matches the zsh prompt, works on machines
   where the UPower service layer might aggregate differently, and is the only
   place the charge limit is reliably exposed.
