@@ -4,7 +4,7 @@ import qs.Common
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
-import "powerStatusLogic.js" as Logic
+import "power_status_logic.js" as Logic
 
 PluginComponent {
     id: root

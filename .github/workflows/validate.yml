@@ -120,5 +120,5 @@ jobs:
 
       - name: Run production logic regressions
         run: |
-          node --check powerStatusLogic.js
+          node --check power_status_logic.js
           node tests/PowerStatusLogic.test.js
