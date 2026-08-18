@@ -1,0 +1,165 @@
+#!/bin/sh
+
+set -eu
+
+project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_dir"
+
+python3 - <<'PY'
+import json
+import pathlib
+import re
+import subprocess
+import sys
+from urllib.parse import unquote
+
+root = pathlib.Path(".")
+manifest = json.loads((root / "plugin.json").read_text())
+
+required = [
+    "id",
+    "name",
+    "description",
+    "version",
+    "author",
+    "type",
+    "capabilities",
+    "component",
+    "icon",
+    "requires_dms",
+]
+missing = [key for key in required if key not in manifest]
+if missing:
+    print(f"missing required manifest fields: {', '.join(missing)}", file=sys.stderr)
+    sys.exit(1)
+
+if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", manifest["id"]):
+    print("manifest id must be camelCase without spaces", file=sys.stderr)
+    sys.exit(1)
+
+if not re.fullmatch(r"\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?", manifest["version"]):
+    print("manifest version must be semantic version format", file=sys.stderr)
+    sys.exit(1)
+
+if manifest["type"] != "widget" or "dankbar-widget" not in manifest["capabilities"]:
+    print("manifest must describe a DankBar widget", file=sys.stderr)
+    sys.exit(1)
+
+if not re.fullmatch(r">=\d+\.\d+\.\d+", manifest["requires_dms"]):
+    print("requires_dms must use a >= semantic version", file=sys.stderr)
+    sys.exit(1)
+
+component = manifest["component"]
+if not component.startswith("./") or not component.endswith(".qml"):
+    print("manifest component must be a relative QML path", file=sys.stderr)
+    sys.exit(1)
+
+component_path = root / component[2:]
+if not component_path.is_file():
+    print(f"component path does not exist: {component}", file=sys.stderr)
+    sys.exit(1)
+
+changelog = (root / "CHANGELOG.md").read_text()
+if f"## {manifest['version']}" not in changelog:
+    print("manifest version is missing from CHANGELOG.md", file=sys.stderr)
+    sys.exit(1)
+
+for document in root.rglob("*.md"):
+    for raw_target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", document.read_text()):
+        target = raw_target.strip().strip("<>")
+        if target.startswith(("#", "http://", "https://", "mailto:")):
+            continue
+        relative_path = unquote(target.split("#", 1)[0])
+        if relative_path and not (document.parent / relative_path).exists():
+            print(f"broken local link in {document}: {target}", file=sys.stderr)
+            sys.exit(1)
+
+tracked = subprocess.run(
+    ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    check=True,
+    stdout=subprocess.PIPE,
+).stdout.split(b"\0")
+for raw_path in tracked:
+    if not raw_path:
+        continue
+    path = pathlib.Path(raw_path.decode())
+    try:
+        text = path.read_text()
+    except UnicodeDecodeError:
+        continue
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if line.endswith((" ", "\t")):
+            print(f"trailing whitespace: {path}:{line_number}", file=sys.stderr)
+            sys.exit(1)
+
+source = component_path.read_text()
+
+
+def strip_strings(value):
+    output = []
+    index = 0
+    length = len(value)
+    while index < length:
+        character = value[index]
+        if character == "/" and index + 1 < length and value[index + 1] == "/":
+            while index < length and value[index] != "\n":
+                index += 1
+            continue
+        if character == "/" and index + 1 < length and value[index + 1] == "*":
+            index += 2
+            while index < length and not (
+                value[index] == "*"
+                and index + 1 < length
+                and value[index + 1] == "/"
+            ):
+                index += 1
+            index += 2
+            continue
+        if character in "\"'`":
+            quote = character
+            index += 1
+            while index < length:
+                if value[index] == "\\":
+                    index += 2
+                    continue
+                if value[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        output.append(character)
+        index += 1
+    return "".join(output)
+
+
+pairs = {")": "(", "]": "[", "}": "{"}
+stack = []
+for character in strip_strings(source):
+    if character in "([{":
+        stack.append(character)
+    elif character in ")]}" and (not stack or stack.pop() != pairs[character]):
+        print(f"unbalanced '{character}'", file=sys.stderr)
+        sys.exit(1)
+
+if stack:
+    print(f"unclosed {stack[-1]}", file=sys.stderr)
+    sys.exit(1)
+
+print("Manifest and QML structure OK")
+PY
+
+node tests/PowerStatusLogic.test.js
+
+dms_qml_import_path=${DMS_QML_IMPORT_PATH:-/usr/share/quickshell/dms}
+if command -v qmllint >/dev/null 2>&1 && [ -d "$dms_qml_import_path" ]; then
+    qmllint -I "$dms_qml_import_path" PowerStatusWidget.qml
+fi
+
+if command -v qmlformat >/dev/null 2>&1; then
+    qmlformat PowerStatusWidget.qml >/dev/null
+fi
+
+git diff --check
+git diff --cached --check
+
+echo "Power Status checks passed"

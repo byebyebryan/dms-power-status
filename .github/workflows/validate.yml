@@ -4,120 +4,17 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   plugin:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Validate manifest
-        run: |
-          python3 - <<'PY'
-          import json
-          import pathlib
-          import re
-          import sys
-
-          root = pathlib.Path(".")
-          manifest = json.loads((root / "plugin.json").read_text())
-
-          required = [
-              "id",
-              "name",
-              "description",
-              "version",
-              "author",
-              "type",
-              "capabilities",
-              "component",
-          ]
-          missing = [key for key in required if key not in manifest]
-          if missing:
-              print(f"missing required manifest fields: {', '.join(missing)}", file=sys.stderr)
-              sys.exit(1)
-
-          if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", manifest["id"]):
-              print("manifest id must be camelCase without spaces", file=sys.stderr)
-              sys.exit(1)
-
-          if not re.fullmatch(r"\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?", manifest["version"]):
-              print("manifest version must be semantic version format", file=sys.stderr)
-              sys.exit(1)
-
-          component = manifest["component"]
-          if not component.startswith("./") or not component.endswith(".qml"):
-              print("manifest component must be a relative QML path", file=sys.stderr)
-              sys.exit(1)
-
-          component_path = root / component[2:]
-          if not component_path.is_file():
-              print(f"component path does not exist: {component}", file=sys.stderr)
-              sys.exit(1)
-
-          changelog = (root / "CHANGELOG.md").read_text()
-          if f"## {manifest['version']}" not in changelog:
-              print("manifest version is missing from CHANGELOG.md", file=sys.stderr)
-              sys.exit(1)
-          PY
-
-      - name: Sanity-check QML balance
-        run: |
-          python3 - <<'PY'
-          import pathlib
-          import sys
-
-          src = pathlib.Path("PowerStatusWidget.qml").read_text()
-
-          # Strip // and /* */ comments, then single/double-quoted strings and
-          # template literals, then assert braces/parens/brackets are balanced.
-          def strip_strings(s):
-              out = []
-              i = 0
-              n = len(s)
-              while i < n:
-                  c = s[i]
-                  if c == "/" and i + 1 < n and s[i + 1] == "/":
-                      while i < n and s[i] != "\n":
-                          i += 1
-                      continue
-                  if c == "/" and i + 1 < n and s[i + 1] == "*":
-                      i += 2
-                      while i < n and not (s[i] == "*" and i + 1 < n and s[i + 1] == "/"):
-                          i += 1
-                      i += 2
-                      continue
-                  if c in "\"'`":
-                      quote = c
-                      i += 1
-                      while i < n:
-                          if s[i] == "\\":
-                              i += 2
-                              continue
-                          if s[i] == quote:
-                              i += 1
-                              break
-                          i += 1
-                      continue
-                  out.append(c)
-                  i += 1
-              return "".join(out)
-
-          code = strip_strings(src)
-          pairs = {")": "(", "]": "[", "}": "{"}
-          stack = []
-          for c in code:
-              if c in "([{":
-                  stack.append(c)
-              elif c in ")]}":
-                  if not stack or stack.pop() != pairs[c]:
-                      print(f"unbalanced '{c}'", file=sys.stderr)
-                      sys.exit(1)
-          if stack:
-              print(f"unclosed {stack[-1]}", file=sys.stderr)
-              sys.exit(1)
-          print("QML balance OK")
-          PY
-
-      - name: Run production logic regressions
-        run: |
-          node tests/PowerStatusLogic.test.js
+      - name: Validate plugin
+        run: ./scripts/check

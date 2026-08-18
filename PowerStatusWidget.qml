@@ -630,7 +630,7 @@ done`;
     //   - Asleep: estimated, since no draw is logged during gaps — the
     //     level drop across each gap, converted to Wh against current full
     //     capacity. Design capacity is used only for health.
-    // Since-unplug: starting % is the level at the unplug moment; starting
+    // Session start: starting % is the level at the unplug moment; starting
     // capacity = start% × current full capacity; elapsed = time since unplug.
     // Legacy samples saved without "w" remain useful for time/level/drop
     // coverage, but never produce fabricated measured energy or power values.
@@ -904,8 +904,8 @@ done`;
                     }
 
                     // stroke in sub-segments so each state gets its own color;
-                    // discharge is additionally rate-tinted from idle (low
-                    // draw) toward discharge (near the window max draw).
+                    // discharge is additionally rate-tinted from muted (low
+                    // draw) toward the full discharge color (window max draw).
                     ctx.lineWidth = chart.lineWidth
                     ctx.lineJoin = "round"
                     ctx.lineCap = "round"
