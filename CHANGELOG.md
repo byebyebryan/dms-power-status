@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Keep Battery and session statistics on one fixed column grid, including the
+  Current/Last battery session header and its metadata.
+
 ## 0.9.0
 
 - Persist the latest completed battery session separately from the rolling

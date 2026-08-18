@@ -168,7 +168,7 @@ from the separate `lastSession` snapshot.
 
 - **Battery** — design capacity (`energy_full_design`, Wh), charge limit
   (`charge_control_end_threshold`, %), health (current capacity vs design, %).
-- **Starting energy/charge** — starting capacity (`start % × current full capacity`, Wh),
+- **Current/last battery session** — starting capacity (`start % × current full capacity`, Wh),
   starting battery % at the unplug moment, and elapsed time since unplug.
 - **Asleep** — *estimated* consumption, since no draw is logged during
   gaps: for each recording gap the level drop `start% − end%` is recorded and

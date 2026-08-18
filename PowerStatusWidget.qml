@@ -22,6 +22,7 @@ PluginComponent {
     // never blanks the pill — we keep the previous valid value instead.
 
     readonly property int windowSeconds: 24 * 3600
+    readonly property real statTitleWidth: 112
     // 2.5 slow-poll periods: a 60s heartbeat plus a conservative margin.
     readonly property int gapS: Logic.GAP_SECONDS
     // Proc keeps a persistent debouncer per id. A plugin-wide id lets leader
@@ -1006,22 +1007,17 @@ done`;
 
     // ── Stats ──
 
-    // One stats row: an optional section title on the left and three
-    // label/value tiles spread across the remaining width. A follow-on row can
-    // reserve the title column so related metrics stay aligned under a section.
+    // One aligned stats row: a fixed section-title column on the left and three
+    // label/value tiles spread across the remaining width. Blank follow-on
+    // titles still keep that column so every metric stays on the same grid.
     component StatRow: Row {
         id: srow
 
         required property string title
         required property var items
-        property bool reserveTitleSpace: false
 
-        // Give section titles room to remain readable on normal popouts;
-        // standalone unlabeled rows use the full width.
-        readonly property bool hasTitle: title.length > 0
-        readonly property bool hasTitleColumn: hasTitle || reserveTitleSpace
-        readonly property real titleWidth: hasTitleColumn ? 112 : 0
-        readonly property int gapCount: Math.max(0, items.length - 1) + (hasTitleColumn ? 1 : 0)
+        readonly property real titleWidth: root.statTitleWidth
+        readonly property int gapCount: items.length
 
         width: parent.width
         spacing: Theme.spacingM
@@ -1029,9 +1025,10 @@ done`;
         StyledText {
             text: srow.title
             width: srow.titleWidth
-            visible: srow.hasTitleColumn
             font.pixelSize: Theme.fontSizeSmall
             color: Theme.surfaceVariantText
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
             elide: Text.ElideRight
             anchors.verticalCenter: parent.verticalCenter
         }
@@ -1240,7 +1237,7 @@ done`;
 
                         StatRow {
                             id: batteryFacts
-                            title: ""
+                            title: "Battery"
                             items: [
                                 { "label": "Design capacity", "value": root._heldEnergyFullDesign > 0 ? root.formatEnergyWh(root._heldEnergyFullDesign) : "–" },
                                 { "label": "Charge limit", "value": root._heldLimit > 0 ? root._heldLimit + "%" : "–" },
@@ -1295,28 +1292,23 @@ done`;
                                         height: visible ? implicitHeight : 0
                                         spacing: Theme.spacingS
 
-                                        StyledText {
-                                            text: root.sessionTitle
-                                            font.pixelSize: Theme.fontSizeMedium
-                                            font.weight: Font.Bold
-                                            color: Theme.surfaceText
-                                        }
-
-                                        StyledText {
-                                            visible: root.sessionMetadataText.length > 0
-                                            height: visible ? implicitHeight : 0
-                                            text: root.sessionMetadataText
-                                            font.pixelSize: Theme.fontSizeSmall
-                                            color: Theme.surfaceVariantText
-                                        }
-
                                         StatRow {
-                                            title: ""
+                                            title: root.sessionTitle
                                             items: [
                                                 { "label": "Starting energy", "value": root.formatEnergyWh(root.displayedSession ? root.displayedSession.startWh : NaN) },
                                                 { "label": "Starting charge", "value": root.formatPct(root.displayedSession ? root.displayedSession.startPct : NaN) },
                                                 { "label": "Duration", "value": root.formatDuration(root.displayedSession ? root.displayedSession.elapsedSeconds : NaN) }
                                             ]
+                                        }
+
+                                        StyledText {
+                                            visible: root.sessionMetadataText.length > 0
+                                            height: visible ? implicitHeight : 0
+                                            x: root.statTitleWidth + Theme.spacingM
+                                            width: parent.width - x
+                                            text: root.sessionMetadataText
+                                            font.pixelSize: Theme.fontSizeSmall
+                                            color: Theme.surfaceVariantText
                                         }
 
                                         StatRow {
@@ -1349,7 +1341,6 @@ done`;
 
                                         StatRow {
                                             title: ""
-                                            reserveTitleSpace: true
                                             visible: root.displayedSession && root.displayedSession.wattCoverageComplete === true
                                             height: visible ? implicitHeight : 0
                                             items: [
