@@ -2,7 +2,7 @@
 // The QML component owns the sysfs command and timers; this module keeps the
 // unit conversion, state normalization, and session math deterministic.
 //
-// This is resource/cache generation v2. If an exported API or behavior changes,
+// This is resource/cache generation v3. If an exported API or behavior changes,
 // bump the filename generation and update every QML, test, and documentation
 // reference so DMS hot reload cannot retain an older shared-library URL.
 
@@ -54,6 +54,18 @@ function convertCurrentToPower(currentUa, voltageUv) {
         return NaN;
     // µA × µV / 1,000,000 = µW.
     return current * voltage / 1000000;
+}
+
+function formatPowerWatts(watts, hideBelowTenth) {
+    if (watts === undefined || watts === null)
+        return "";
+    var value = nonNegative(watts);
+    if (!isFinite(value) || (hideBelowTenth === true && value < 0.1))
+        return "";
+    // Round half-up in tenths instead of relying on toFixed's binary-float
+    // edge behavior. The zsh prompt applies the same contract in integer µW.
+    var tenths = Math.floor(value * 10 + 0.5);
+    return Math.floor(tenths / 10) + "." + (tenths % 10) + "W";
 }
 
 function parseNumber(value) {
@@ -662,6 +674,7 @@ var api = {
     SESSION_SNAPSHOT_SCHEMA: SESSION_SNAPSHOT_SCHEMA,
     convertChargeToEnergy: convertChargeToEnergy,
     convertCurrentToPower: convertCurrentToPower,
+    formatPowerWatts: formatPowerWatts,
     parseDelimitedOutput: parseDelimitedOutput,
     aggregateBatteryRecords: aggregateBatteryRecords,
     aggregateDelimitedOutput: aggregateDelimitedOutput,

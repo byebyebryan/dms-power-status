@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.2
+
+- Show instantaneous aggregate power to the nearest tenth of a watt at every
+  draw level, with explicit half-up rounding shared with the zsh prompt while
+  keeping smoothing limited to ETA.
+
 ## 0.9.1
 
 - Keep Battery and session statistics on one fixed column grid, including the

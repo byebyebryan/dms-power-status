@@ -67,6 +67,15 @@ laptop's percentage or plugged state. When every usable battery has a given
 physical value, full/now/design values are aggregated; if one battery lacks a
 physical value, that quantity is unavailable rather than a partial sum.
 
+### Power display contract
+
+The sampler retains each usable system battery's raw `power_now` value, or its
+absolute `current_now × voltage_now` fallback, in µW until all batteries have
+been summed. The pill shows that instantaneous aggregate to one decimal place
+using half-up rounding and hides readings below 0.1W. Session low, average, and
+high power use the same one-decimal formatter and may show `0.0W`. Live displayed
+power is never smoothed—only the separate ETA calculation uses the rate EMA.
+
 ### Transient handling
 
 Values are **held last-good**: a command with a non-zero exit or an expired
@@ -120,7 +129,7 @@ leader is destroyed, another instance claims the lease after 7s (or immediately
 when the old instance releases it). The persisted file contains the rolling
 `samples` and durable `lastSession` keys, but only the leader writes them.
 
-`power_status_logic_v2.js` is marked `.pragma library`. QML's shared-library
+`power_status_logic_v3.js` is marked `.pragma library`. QML's shared-library
 semantics are required here: every bar/screen imports the same stateless
 power-domain functions, and DMS cache-busted hot reloads must not create a
 context-bound script that fails when the parent component is reloaded. The

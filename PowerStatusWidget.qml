@@ -4,7 +4,7 @@ import qs.Common
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
-import "power_status_logic_v2.js" as Logic
+import "power_status_logic_v3.js" as Logic
 
 PluginComponent {
     id: root
@@ -547,10 +547,7 @@ done`;
     verticalBarPill: hasBattery ? verticalPill : null
 
     function formatWatts(watts) {
-        if (watts === undefined || watts === null || isNaN(watts) || watts < 0.1) {
-            return "";
-        }
-        return watts < 10 ? `${watts.toFixed(1)}W` : `${watts.toFixed(0)}W`;
+        return Logic.formatPowerWatts(watts, true);
     }
 
     // Charge-limit-aware ETA. DMS's formatTimeRemaining() ignores the charge
@@ -684,7 +681,7 @@ done`;
     function formatWatt(v) {
         if (v === undefined || v === null || isNaN(v) || v < 0)
             return "–";
-        return v < 10 ? v.toFixed(1) + "W" : v.toFixed(0) + "W";
+        return Logic.formatPowerWatts(v, false);
     }
 
     function formatPct(p) {

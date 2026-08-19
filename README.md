@@ -18,7 +18,7 @@ take priority over new controls or view modes.
 
 | Surface | Contents |
 | --- | --- |
-| DankBar pill | Battery icon, percentage, live watts, and estimated time remaining |
+| DankBar pill | Battery icon, percentage, instantaneous watts, and estimated time remaining |
 | Popout overview | Current power state, always-visible 24-hour graph, legend, and battery facts |
 | Session details | Current session while on battery; latest completed session while plugged in |
 
@@ -40,6 +40,8 @@ history.
   empty states—no selector or extra view state.
 - Direct Linux sysfs reads for percentage, state, watts, capacity, source
   presence, and firmware charge limit; no DMS `BatteryService` dependency.
+- Instantaneous aggregate power rounded half-up to the nearest 0.1W at every
+  draw level; smoothing is used only for ETA.
 - Support for both `energy_*` and `charge_*` battery data, including aggregated
   system batteries and filtering for peripheral/device-scope batteries.
 - One shared sampler and state writer across multi-monitor bar instances, with
@@ -113,7 +115,7 @@ available, and checks the diff for whitespace errors. The default DMS QML
 import path is `/usr/share/quickshell/dms`; override it with
 `DMS_QML_IMPORT_PATH` when needed.
 
-`power_status_logic_v2.js` is a shared QML library and an explicit cache/API
+`power_status_logic_v3.js` is a shared QML library and an explicit cache/API
 generation. When its exported behavior changes, bump the suffix and update the
 QML import, Node harness, and references together so DMS hot reloads cannot
 retain an older library URL.

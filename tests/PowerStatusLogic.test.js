@@ -9,7 +9,7 @@ const vm = require("node:vm");
 // QML production resource. Node does not understand
 // `.pragma library`, so remove only that one directive in the VM copy; all
 // production code remains byte-for-byte identical and is still syntax-checked.
-const logicPath = path.join(__dirname, "..", "power_status_logic_v2.js");
+const logicPath = path.join(__dirname, "..", "power_status_logic_v3.js");
 const productionSource = fs.readFileSync(logicPath, "utf8");
 const sourceLines = productionSource.split(/\r?\n/);
 const pragmaLine = sourceLines.findIndex(line => line === ".pragma library");
@@ -36,6 +36,22 @@ function approx(actual, expected, epsilon = 1e-9) {
 
 const fixture = JSON.parse(fs.readFileSync(
     path.join(__dirname, "fixtures", "sysfs-records.json"), "utf8"));
+
+// Power displays use one decimal at every draw level and round half-up in
+// tenths. Only the pill hides valid readings below 0.1W.
+{
+    assert.equal(logic.formatPowerWatts(undefined, false), "");
+    assert.equal(logic.formatPowerWatts(null, false), "");
+    assert.equal(logic.formatPowerWatts(NaN, false), "");
+    assert.equal(logic.formatPowerWatts(0, false), "0.0W");
+    assert.equal(logic.formatPowerWatts(0.099999, true), "");
+    assert.equal(logic.formatPowerWatts(0.1, true), "0.1W");
+    assert.equal(logic.formatPowerWatts(1.04, true), "1.0W");
+    assert.equal(logic.formatPowerWatts(1.05, true), "1.1W");
+    assert.equal(logic.formatPowerWatts(9.95, true), "10.0W");
+    assert.equal(logic.formatPowerWatts(11.14, true), "11.1W");
+    assert.equal(logic.formatPowerWatts(11.15, true), "11.2W");
+}
 
 // ENERGY_* and CHARGE_* are both accepted, with charge values converted using
 // voltage_now. The Device-scope HID battery is excluded from every aggregate.
