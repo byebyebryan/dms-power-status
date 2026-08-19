@@ -45,6 +45,6 @@ schema and exercise compatibility paths first.
 - User-visible or behavioral releases update both `plugin.json` and
   `CHANGELOG.md`.
 - If the exported QML library API or behavior changes, bump the
-  `power_status_logic_v3.js` resource suffix and update its QML import, test
+  `power_status_logic_v4.js` resource suffix and update its QML import, test
   harness, and documentation references together. This avoids stale shared
   library code across DMS hot reloads.

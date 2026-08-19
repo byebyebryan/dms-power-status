@@ -9,7 +9,7 @@ const vm = require("node:vm");
 // QML production resource. Node does not understand
 // `.pragma library`, so remove only that one directive in the VM copy; all
 // production code remains byte-for-byte identical and is still syntax-checked.
-const logicPath = path.join(__dirname, "..", "power_status_logic_v3.js");
+const logicPath = path.join(__dirname, "..", "power_status_logic_v4.js");
 const productionSource = fs.readFileSync(logicPath, "utf8");
 const sourceLines = productionSource.split(/\r?\n/);
 const pragmaLine = sourceLines.findIndex(line => line === ".pragma library");
@@ -163,6 +163,83 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(stats.activeSeconds, 60);
     assert.equal(stats.activePct, 1);
     approx(stats.activeWh, 10 / 60);
+    assert.equal(stats.minWatts, 10);
+    assert.equal(stats.avgWatts, 10);
+    assert.equal(stats.maxWatts, 10);
+}
+
+// A zero/missing first discharge read is a settling transient. The first
+// active interval may use its valid right endpoint exactly once.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2, w: 0 },
+        { t: 60, v: 79, c: 0, w: 0 },
+        { t: 120, v: 78, c: 0, w: 10 },
+        { t: 180, v: 77, c: 0, w: 10 },
+        { t: 240, v: 77, c: 2, w: 0 }
+    ], 240, 86400, 150, 50);
+    assert.equal(stats.wattCoverageComplete, true);
+    approx(stats.activeWh, 10 * 180 / 3600);
+    assert.equal(stats.minWatts, 10);
+    assert.equal(stats.avgWatts, 10);
+    assert.equal(stats.maxWatts, 10);
+}
+
+// The first active interval after a long gap gets the same one-interval
+// settling allowance; the gap itself remains asleep and contributes no watts.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2, w: 0 },
+        { t: 60, v: 79, c: 0, w: 10 },
+        { t: 120, v: 78, c: 0, w: 10 },
+        { t: 300, v: 77, c: 0, w: 0 },
+        { t: 360, v: 76, c: 0, w: 10 },
+        { t: 420, v: 76, c: 2, w: 0 }
+    ], 420, 86400, 150, 50);
+    assert.equal(stats.suspendedSeconds, 180);
+    assert.equal(stats.wattCoverageComplete, true);
+    assert.equal(stats.minWatts, 10);
+    assert.equal(stats.avgWatts, 10);
+    assert.equal(stats.maxWatts, 10);
+    approx(stats.activeWh, 10 * 180 / 3600);
+}
+
+// A sub-threshold read in a settled run cannot be carried forward. The
+// affected session keeps time/drop data but measured energy/rates are absent.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2, w: 0 },
+        { t: 60, v: 79, c: 0, w: 10 },
+        { t: 120, v: 78, c: 0, w: 10 },
+        { t: 180, v: 77, c: 0, w: 0.05 },
+        { t: 240, v: 76, c: 0, w: 10 },
+        { t: 300, v: 76, c: 2, w: 0 }
+    ], 300, 86400, 150, 50);
+    assert.equal(stats.wattCoverageComplete, false);
+    assert.ok(Number.isNaN(stats.activeWh));
+    assert.ok(Number.isNaN(stats.minWatts));
+    assert.ok(Number.isNaN(stats.avgWatts));
+    assert.ok(Number.isNaN(stats.maxWatts));
+}
+
+// A long recording gap is never assigned a power rate. Its pre-gap endpoint
+// does not leak across the gap, while the wake endpoint may serve the following
+// genuinely awake interval.
+{
+    const stats = logic.computeStats([
+        { t: 0, v: 80, c: 2, w: 0 },
+        { t: 60, v: 79, c: 0, w: 5 },
+        { t: 120, v: 78, c: 0, w: 40 },
+        { t: 300, v: 77, c: 0, w: 9 },
+        { t: 360, v: 76, c: 0, w: 9 },
+        { t: 420, v: 76, c: 2, w: 0 }
+    ], 420, 86400, 150, 50);
+    assert.equal(stats.suspendedSeconds, 180);
+    assert.equal(stats.suspendedPct, 1);
+    assert.equal(stats.minWatts, 5);
+    approx(stats.avgWatts, 23 / 3);
+    assert.equal(stats.maxWatts, 9);
+    approx(stats.activeWh, 23 / 60);
 }
 
 // A live discharge session exposes reliable timestamps and end level but is
@@ -257,6 +334,63 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(snapshot.wattCoverageComplete, false);
 }
 
+// Schema-1 snapshots that may contain a bogus 0.0W minimum are migrated
+// without retaining measured awake energy/rate fields. Time, level, drop, and
+// estimated asleep fields remain available for the completed-session view.
+{
+    const stats = logic.computeStats([
+        { t: 100, v: 90, c: 2, w: 0 },
+        { t: 160, v: 89, c: 0, w: 10 },
+        { t: 220, v: 88, c: 0, w: 10 },
+        { t: 280, v: 88, c: 2, w: 0 }
+    ], 280, 86400, 150, 50);
+    const current = logic.snapshotFromStats(stats);
+    const legacy = {
+        ...current,
+        schema: 1,
+        minWatts: 0.05,
+        avgWatts: 5,
+        maxWatts: 10,
+        activeWh: 0.25,
+        wattCoverageComplete: true
+    };
+    const migrated = logic.normalizeLastSession(legacy);
+    assert.equal(migrated.schema, logic.SESSION_SNAPSHOT_SCHEMA);
+    assert.equal(migrated.wattCoverageComplete, false);
+    assert.equal(migrated.startT, legacy.startT);
+    assert.equal(migrated.endT, legacy.endT);
+    assert.equal(migrated.startPct, legacy.startPct);
+    assert.equal(migrated.endPct, legacy.endPct);
+    assert.equal(migrated.activeSeconds, legacy.activeSeconds);
+    assert.equal(migrated.activePct, legacy.activePct);
+    assert.equal(migrated.suspendedSeconds, legacy.suspendedSeconds);
+    assert.equal(migrated.suspendedWh, legacy.suspendedWh);
+    assert.equal(migrated.suspendedPct, legacy.suspendedPct);
+    assert.equal(migrated.activeWh, null);
+    assert.equal(migrated.minWatts, null);
+    assert.equal(migrated.avgWatts, null);
+    assert.equal(migrated.maxWatts, null);
+
+    // A complete legacy snapshot whose observed minimum is already above the
+    // new floor did not admit a sub-threshold measured sample, so its
+    // trustworthy measured fields survive the schema bump.
+    const trustworthyLegacy = {
+        ...current,
+        schema: 1,
+        minWatts: 10,
+        avgWatts: 10,
+        maxWatts: 10,
+        activeWh: 1 / 3,
+        wattCoverageComplete: true
+    };
+    const preserved = logic.normalizeLastSession(trustworthyLegacy);
+    assert.equal(preserved.wattCoverageComplete, true);
+    assert.equal(preserved.activeWh, trustworthyLegacy.activeWh);
+    assert.equal(preserved.minWatts, 10);
+    assert.equal(preserved.avgWatts, 10);
+    assert.equal(preserved.maxWatts, 10);
+}
+
 // Malformed snapshots are rejected; a newer completed session replaces an
 // older one, while duplicate/older boundaries retain the existing snapshot.
 {
@@ -267,6 +401,12 @@ const fixture = JSON.parse(fs.readFileSync(
     ], 220, 86400, 150, 50);
     const snapshot = logic.snapshotFromStats(stats);
     assert.equal(snapshot.wattCoverageComplete, true);
+    const sanitized = logic.snapshotFromStats({
+        ...stats, minWatts: 0.05, avgWatts: 5, maxWatts: 10
+    });
+    assert.equal(sanitized.wattCoverageComplete, false);
+    assert.equal(sanitized.activeWh, null);
+    assert.equal(sanitized.minWatts, null);
     assert.deepEqual(logic.normalizeLastSession(snapshot), snapshot);
     assert.equal(
         logic.normalizeLastSession({ ...snapshot, elapsedSeconds: snapshot.elapsedSeconds + 1 })
@@ -276,6 +416,7 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(logic.normalizeLastSession({
         ...snapshot, elapsedSeconds: snapshot.elapsedSeconds + 2
     }), null);
+    assert.equal(logic.normalizeLastSession({ ...snapshot, minWatts: 0.05 }), null);
     assert.equal(logic.normalizeLastSession({ ...snapshot, activeWh: null }), null);
     assert.equal(logic.normalizeLastSession({ ...snapshot, minWatts: 20, avgWatts: 10 }), null);
     assert.equal(logic.normalizeLastSession({ ...snapshot, avgWatts: 20, maxWatts: 10 }), null);
@@ -291,16 +432,19 @@ const fixture = JSON.parse(fs.readFileSync(
     assert.equal(logic.shouldReplaceLastSession(snapshot, { ...snapshot, endT: snapshot.endT + 1 }), true);
 }
 
-// Legacy samples without `w` cannot be integrated across. The conservative
-// policy reports measured Wh/rate unavailable rather than mixing old/new data.
+// Missing/sub-threshold samples in a settled run cannot be integrated across.
+// The conservative policy reports measured Wh/rate unavailable rather than
+// mixing old/new data or carrying a stale value forward.
 {
     const stats = logic.computeStats([
         { t: 0, v: 80, c: 2 },
-        { t: 60, v: 79, c: 0 },
-        { t: 120, v: 78, c: 0, w: 10 }
-    ], 120, 86400, 150, 50);
+        { t: 60, v: 79, c: 0, w: 10 },
+        { t: 120, v: 78, c: 0 },
+        { t: 180, v: 77, c: 0, w: 10 },
+        { t: 240, v: 77, c: 2, w: 0 }
+    ], 240, 86400, 150, 50);
     assert.equal(stats.sessionAvailable, true);
-    assert.equal(stats.activeSeconds, 60);
+    assert.equal(stats.activeSeconds, 180);
     assert.ok(Number.isNaN(stats.activeWh));
     assert.ok(Number.isNaN(stats.avgWatts));
 }

@@ -24,8 +24,10 @@ take priority over new controls or view modes.
 
 Session details include starting energy and charge, duration, estimated use
 while asleep, measured use while awake, battery drop, and low/average/high
-awake draw when power coverage is complete. A completed session is frozen at
-the confirmed plug boundary and persists independently of the rolling graph
+awake draw when power coverage is complete. Sub-0.1W discharge reads are
+treated as unavailable for awake measurements, so they cannot create a
+misleading 0.0W low or dilute energy. A completed session is frozen at the
+confirmed plug boundary and persists independently of the rolling graph
 history.
 
 ## Highlights
@@ -115,7 +117,7 @@ available, and checks the diff for whitespace errors. The default DMS QML
 import path is `/usr/share/quickshell/dms`; override it with
 `DMS_QML_IMPORT_PATH` when needed.
 
-`power_status_logic_v3.js` is a shared QML library and an explicit cache/API
+`power_status_logic_v4.js` is a shared QML library and an explicit cache/API
 generation. When its exported behavior changes, bump the suffix and update the
 QML import, Node harness, and references together so DMS hot reloads cannot
 retain an older library URL.

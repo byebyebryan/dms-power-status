@@ -4,7 +4,7 @@ import qs.Common
 import qs.Modules.Plugins
 import qs.Services
 import qs.Widgets
-import "power_status_logic_v3.js" as Logic
+import "power_status_logic_v4.js" as Logic
 
 PluginComponent {
     id: root
@@ -180,6 +180,10 @@ PluginComponent {
             state.initialized = true;
             state.noBatteryStreak = 0;
             pruneSamples();
+        } else {
+            // Global state can outlive a QML reload, so normalize an older
+            // persisted snapshot here as well as during the initial load.
+            state.lastSession = Logic.normalizeLastSession(state.lastSession);
         }
     }
 

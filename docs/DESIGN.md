@@ -72,9 +72,14 @@ physical value, that quantity is unavailable rather than a partial sum.
 The sampler retains each usable system battery's raw `power_now` value, or its
 absolute `current_now × voltage_now` fallback, in µW until all batteries have
 been summed. The pill shows that instantaneous aggregate to one decimal place
-using half-up rounding and hides readings below 0.1W. Session low, average, and
-high power use the same one-decimal formatter and may show `0.0W`. Live displayed
-power is never smoothed—only the separate ETA calculation uses the rate EMA.
+using half-up rounding and hides readings below 0.1W. For session math, a
+discharge watt below 0.1W is unavailable: it cannot become a low/average/high
+value or dilute awake energy. The first active interval after unplug/session
+start, and the first active interval after a recording gap, may use its valid
+right endpoint when the left endpoint is missing or sub-threshold. A later
+invalid read marks watt coverage incomplete instead of being carried forward.
+Live displayed power is never smoothed—only the separate ETA calculation uses
+the rate EMA.
 
 ### Transient handling
 
@@ -115,6 +120,11 @@ collection continues while the popout is closed.
   schema-versioned, JSON-safe snapshot. It is finalized only at a confirmed
   discharge-to-charging/plugged boundary, then retained until a newer valid
   session completes. It is not pruned with the rolling samples.
+- Schema-1 completed snapshots are migrated to the current schema on load:
+  timing, levels, active/asleep durations, battery-drop, and estimated asleep
+  fields are retained. If a legacy snapshot was watt-complete but recorded a
+  minimum below 0.1W, its measured awake energy/rate fields are cleared; a
+  complete snapshot whose minimum already meets the floor retains those fields.
 - Existing installs with only `samples` are migrated conservatively. A
   one-time backfill is allowed only after a confirmed plugged read and an
   unambiguous completed boundary is present in the retained samples; malformed
@@ -129,7 +139,7 @@ leader is destroyed, another instance claims the lease after 7s (or immediately
 when the old instance releases it). The persisted file contains the rolling
 `samples` and durable `lastSession` keys, but only the leader writes them.
 
-`power_status_logic_v3.js` is marked `.pragma library`. QML's shared-library
+`power_status_logic_v4.js` is marked `.pragma library`. QML's shared-library
 semantics are required here: every bar/screen imports the same stateless
 power-domain functions, and DMS cache-busted hot reloads must not create a
 context-bound script that fails when the parent component is reloaded. The
@@ -192,14 +202,22 @@ from the separate `lastSession` snapshot.
   active time. An aligned, unlabeled follow-on row shows low/average/high draw
   only when watt coverage is complete.
 
-"Awake" means regular discharge samples; "Asleep" means recording
-gaps (suspend/off). Session stats **freeze at the plug boundary**: the final
+"Awake" means regular discharge samples; "Asleep" means recording gaps
+(suspend/off). Session stats **freeze at the plug boundary**: the final
 discharge interval ends at the timestamp and level of the first confirmed
-plugged/charging sample. If there is no session, values remain unavailable
-rather than fabricated zeroes. A gap over 150s is treated as asleep. Physical
-Wh and rate stats require watt coverage at both ends of every active interval;
-legacy samples without `w` therefore leave measured Wh/rate unavailable while
-valid time and battery-drop values remain available.
+plugged/charging sample, using only the last confirmed discharging watt. If
+there is no session, values remain unavailable rather than fabricated zeroes. A
+gap over 150s is treated as asleep, and its duration is never integrated
+across the gap into awake energy/rate statistics. Either endpoint may still
+serve its adjacent awake interval when that interval is otherwise valid.
+Physical Wh and rate stats require valid (at least 0.1W) watt coverage at both
+ends of every awake-to-awake active interval, subject only to the bounded
+first-interval settling fallback; the direct plug-boundary interval uses only
+its confirmed discharging left endpoint.
+
+Legacy/missing or sub-threshold reads in a settled run therefore leave measured
+Wh/rate unavailable while valid time, battery-drop, and asleep fields remain
+available.
 
 ### Session start edge cases
 

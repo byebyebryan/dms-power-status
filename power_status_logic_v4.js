@@ -2,14 +2,16 @@
 // The QML component owns the sysfs command and timers; this module keeps the
 // unit conversion, state normalization, and session math deterministic.
 //
-// This is resource/cache generation v3. If an exported API or behavior changes,
+// This is resource/cache generation v4. If an exported API or behavior changes,
 // bump the filename generation and update every QML, test, and documentation
 // reference so DMS hot reload cannot retain an older shared-library URL.
 
 .pragma library
 
 var GAP_SECONDS = 150;
-var SESSION_SNAPSHOT_SCHEMA = 1;
+var MIN_ACTIVE_WATTS = 0.1;
+var SESSION_SNAPSHOT_SCHEMA = 2;
+var LEGACY_SESSION_SNAPSHOT_SCHEMA = 1;
 
 function finiteNumber(value) {
     var number = typeof value === "number" ? value : Number(value);
@@ -304,7 +306,7 @@ function validSample(sample) {
 
 function validWatt(value) {
     var w = finiteNumber(value);
-    return isFinite(w) && w >= 0;
+    return isFinite(w) && w >= MIN_ACTIVE_WATTS;
 }
 
 function sortedSamples(samples, t0) {
@@ -401,6 +403,10 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
     var runStartV = start.v;
     var runLastV = start.v;
     var runHasInterval = false;
+    // A low/missing left sample can be a transient at the first settled read
+    // after unplug or resume. Permit one bounded right-endpoint fallback at
+    // the start of each active run; never carry it forward mid-run.
+    var settlingInterval = true;
     var endT = NaN;
 
     function closeActiveRun(endV) {
@@ -479,6 +485,7 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
             if (isFinite(fullWh))
                 suspendedWh += drop / 100 * fullWh;
             runStartV = b.v;
+            settlingInterval = true;
             continue;
         }
 
@@ -492,22 +499,31 @@ function computeStats(samples, now, windowSeconds, gapSeconds, currentFullWh) {
         }
         runLastV = b.v;
 
-        // Conservative coverage policy: both endpoints must carry watt data.
-        // This prevents a legacy sample without `w` from being integrated with
-        // a newer sample merely because the newer side has a reading.
+        // Conservative coverage policy: both awake endpoints must carry a
+        // >=0.1W watt value, except for the bounded first-interval settling
+        // fallback below. This prevents a legacy/missing or sub-threshold
+        // sample from being integrated with a newer sample in a settled run.
+        var intervalW = NaN;
         if (validWatt(a.w) && validWatt(b.w)) {
+            intervalW = a.w;
+        } else if (settlingInterval && !validWatt(a.w) && validWatt(b.w)) {
+            // The right endpoint confirms that this first active interval is
+            // a real discharge run, while the transient left read is unusable.
+            intervalW = b.w;
+        }
+        if (isFinite(intervalW)) {
             wattIntervals++;
             // The reading at a is the confirmed draw for the interval ending
-            // at b. The b endpoint is required only to prove continuous
-            // coverage; using a avoids assigning the plugged boundary's
-            // (usually zero) rate to the preceding discharge interval.
-            sumWt += a.w * dt;
+            // at b. The b endpoint proves continuous coverage. The one
+            // settling exception above uses b explicitly.
+            sumWt += intervalW * dt;
             sumDt += dt;
-            minW = Math.min(minW, a.w);
-            maxW = Math.max(maxW, a.w);
+            minW = Math.min(minW, intervalW);
+            maxW = Math.max(maxW, intervalW);
         } else {
             wattComplete = false;
         }
+        settlingInterval = false;
     }
 
     if (runHasInterval && pts.length > startIdx + 1) {
@@ -557,12 +573,26 @@ function snapshotFromStats(stats) {
             || !isFinite(elapsed) || elapsed < 0)
         return null;
 
+    var wattComplete = stats.wattCoverageComplete === true;
+    var activeWh = jsonNumber(stats.activeWh);
+    var minWatts = jsonNumber(stats.minWatts);
+    var avgWatts = jsonNumber(stats.avgWatts);
+    var maxWatts = jsonNumber(stats.maxWatts);
+    if (wattComplete
+            && (activeWh === null || minWatts === null || avgWatts === null
+                || maxWatts === null
+                || minWatts < MIN_ACTIVE_WATTS
+                || avgWatts < MIN_ACTIVE_WATTS
+                || maxWatts < MIN_ACTIVE_WATTS
+                || minWatts > avgWatts || avgWatts > maxWatts))
+        wattComplete = false;
+
     return {
         schema: SESSION_SNAPSHOT_SCHEMA,
         sessionAvailable: true,
         hasIntervals: true,
         completedBoundary: true,
-        wattCoverageComplete: stats.wattCoverageComplete === true,
+        wattCoverageComplete: wattComplete,
         startT: startT,
         endT: endT,
         startPct: startPct,
@@ -570,14 +600,14 @@ function snapshotFromStats(stats) {
         startWh: jsonNumber(stats.startWh),
         elapsedSeconds: elapsed,
         activeSeconds: jsonNumber(stats.activeSeconds),
-        activeWh: jsonNumber(stats.activeWh),
+        activeWh: wattComplete ? activeWh : null,
         activePct: jsonNumber(stats.activePct),
         suspendedSeconds: jsonNumber(stats.suspendedSeconds),
         suspendedWh: jsonNumber(stats.suspendedWh),
         suspendedPct: jsonNumber(stats.suspendedPct),
-        minWatts: jsonNumber(stats.minWatts),
-        avgWatts: jsonNumber(stats.avgWatts),
-        maxWatts: jsonNumber(stats.maxWatts)
+        minWatts: wattComplete ? minWatts : null,
+        avgWatts: wattComplete ? avgWatts : null,
+        maxWatts: wattComplete ? maxWatts : null
     };
 }
 
@@ -593,12 +623,15 @@ function optionalSnapshotNumber(value, low, high) {
 
 function normalizeLastSession(value) {
     if (!value || typeof value !== "object"
-            || Number(value.schema) !== SESSION_SNAPSHOT_SCHEMA
+            || (Number(value.schema) !== SESSION_SNAPSHOT_SCHEMA
+                && Number(value.schema) !== LEGACY_SESSION_SNAPSHOT_SCHEMA)
             || value.sessionAvailable !== true
             || value.hasIntervals !== true
             || value.completedBoundary !== true
             || typeof value.wattCoverageComplete !== "boolean")
         return null;
+
+    var migratingLegacy = Number(value.schema) === LEGACY_SESSION_SNAPSHOT_SCHEMA;
 
     var startT = optionalSnapshotNumber(value.startT, 0);
     var endT = optionalSnapshotNumber(value.endT, 0);
@@ -622,7 +655,7 @@ function normalizeLastSession(value) {
         sessionAvailable: true,
         hasIntervals: true,
         completedBoundary: true,
-        wattCoverageComplete: value.wattCoverageComplete === true,
+        wattCoverageComplete: false,
         startT: startT,
         endT: endT,
         startPct: startPct,
@@ -639,6 +672,34 @@ function normalizeLastSession(value) {
             return null;
         normalized[field] = number;
     }
+    var measuredComplete = value.wattCoverageComplete === true;
+    if (migratingLegacy) {
+        // Schema 1 admitted sub-threshold samples as measured power. A
+        // complete legacy session with a valid >=0.1W minimum remains
+        // trustworthy; affected or incomplete sessions keep only their
+        // timing/level/asleep facts.
+        measuredComplete = measuredComplete
+            && normalized.activeWh !== null
+            && normalized.minWatts !== null
+            && normalized.avgWatts !== null
+            && normalized.maxWatts !== null
+            && isFinite(normalized.activeWh)
+            && isFinite(normalized.minWatts)
+            && isFinite(normalized.avgWatts)
+            && isFinite(normalized.maxWatts)
+            && normalized.minWatts >= MIN_ACTIVE_WATTS
+            && normalized.avgWatts >= MIN_ACTIVE_WATTS
+            && normalized.maxWatts >= MIN_ACTIVE_WATTS
+            && normalized.minWatts <= normalized.avgWatts
+            && normalized.avgWatts <= normalized.maxWatts;
+    }
+    normalized.wattCoverageComplete = measuredComplete;
+    if (!measuredComplete) {
+        normalized.activeWh = null;
+        normalized.minWatts = null;
+        normalized.avgWatts = null;
+        normalized.maxWatts = null;
+    }
     if (normalized.wattCoverageComplete) {
         if (normalized.activeWh === null || normalized.minWatts === null
                 || normalized.avgWatts === null || normalized.maxWatts === null
@@ -646,6 +707,9 @@ function normalizeLastSession(value) {
                 || !isFinite(normalized.minWatts)
                 || !isFinite(normalized.avgWatts)
                 || !isFinite(normalized.maxWatts)
+                || normalized.minWatts < MIN_ACTIVE_WATTS
+                || normalized.avgWatts < MIN_ACTIVE_WATTS
+                || normalized.maxWatts < MIN_ACTIVE_WATTS
                 || normalized.minWatts > normalized.avgWatts
                 || normalized.avgWatts > normalized.maxWatts)
             return null;
@@ -671,6 +735,7 @@ function sampleCodeForState(state) {
 
 var api = {
     GAP_SECONDS: GAP_SECONDS,
+    MIN_ACTIVE_WATTS: MIN_ACTIVE_WATTS,
     SESSION_SNAPSHOT_SCHEMA: SESSION_SNAPSHOT_SCHEMA,
     convertChargeToEnergy: convertChargeToEnergy,
     convertCurrentToPower: convertCurrentToPower,

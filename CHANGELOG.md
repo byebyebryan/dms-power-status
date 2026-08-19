@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3
+
+- Exclude sub-0.1W discharge reads from awake energy and low/average/high
+  statistics, with a bounded settling fallback after unplug or resume; migrate
+  legacy completed sessions conservatively.
+
 ## 0.9.2
 
 - Show instantaneous aggregate power to the nearest tenth of a watt at every
